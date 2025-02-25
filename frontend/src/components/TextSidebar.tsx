@@ -1,14 +1,17 @@
 import { useEffect, useRef } from 'react';
-import { TextLine } from '@/types/ocr';
+import { OCRResult, OCRTextLine } from '@/types/pdf';
 
 interface TextSidebarProps {
-  textLines: TextLine[];
-  onTextClick: (textLine: TextLine) => void;
-  selectedText?: TextLine;
+  ocrResults: OCRResult[];
+  onTextClick?: (textLine: OCRTextLine) => void;
+  selectedText?: OCRTextLine;
 }
 
-export default function TextSidebar({ textLines, onTextClick, selectedText }: TextSidebarProps) {
+export default function TextSidebar({ ocrResults, onTextClick, selectedText }: TextSidebarProps) {
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
+  
+  // Flatten all text lines from all OCR results
+  const textLines = ocrResults.flatMap(result => result.text_lines);
 
   // Auto-scroll to selected text
   useEffect(() => {
@@ -27,6 +30,9 @@ export default function TextSidebar({ textLines, onTextClick, selectedText }: Te
     <div className="w-full h-full flex flex-col bg-gray-50">
       <div className="p-4 border-b bg-white">
         <h2 className="text-xl font-bold">Extracted Text</h2>
+        <p className="text-sm text-gray-500 mt-1">
+          {textLines.length} text lines found
+        </p>
       </div>
       <div className="flex-1 overflow-y-auto p-4">
         <div className="space-y-2">
@@ -39,14 +45,23 @@ export default function TextSidebar({ textLines, onTextClick, selectedText }: Te
                   ? 'bg-blue-100 border-blue-500'
                   : 'bg-white hover:bg-gray-100 border-gray-200'
               } border`}
-              onClick={() => onTextClick(line)}
+              onClick={() => onTextClick?.(line)}
             >
-              <p className="font-medium">{line.text}</p>
-              <p className="text-sm text-gray-500">
-                Confidence: {(line.confidence * 100).toFixed(1)}%
-              </p>
+              <p className="font-medium break-words">{line.text}</p>
+              <div className="flex justify-between items-center mt-2 text-sm text-gray-500">
+                <span>Confidence: {(line.confidence * 100).toFixed(1)}%</span>
+                <span className="text-xs">
+                  {line.bbox[0].toFixed(0)}, {line.bbox[1].toFixed(0)}
+                </span>
+              </div>
             </div>
           ))}
+          
+          {textLines.length === 0 && (
+            <div className="text-center py-8 text-gray-500">
+              No text found in this page
+            </div>
+          )}
         </div>
       </div>
     </div>

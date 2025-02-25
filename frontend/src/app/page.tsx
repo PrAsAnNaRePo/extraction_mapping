@@ -2,114 +2,242 @@
 
 import { useState } from 'react';
 import axios from 'axios';
-import ImageAnnotator from '@/components/ImageAnnotator';
-import TextSidebar from '@/components/TextSidebar';
-import { OCRResponse, TextLine } from '@/types/ocr';
+import PDFViewer from '../components/PDFViewer';
+import PageTabs from '../components/PageTabs';
+import ImageAnnotator from '../components/ImageAnnotator';
+import TextSidebar from '../components/TextSidebar';
+import { PDFProcessingState, PDFInfo, PDFProcessingResult, OCRResult } from '../types/pdf';
+
+const API_BASE_URL = 'http://localhost:3002';
 
 export default function Home() {
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [imageUrl, setImageUrl] = useState<string>('');
-  const [textLines, setTextLines] = useState<TextLine[]>([]);
-  const [selectedBox, setSelectedBox] = useState<TextLine>();
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string>('');
+    const [pdfInfo, setPdfInfo] = useState<PDFInfo>();
+    const [processingState, setProcessingState] = useState<PDFProcessingState>({
+        isProcessing: false,
+        currentPage: 0,
+        processedPages: [],
+        results: {},
+        pageImages: {} as Record<number, string>,
+        selectedBox: undefined,
+    });
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setSelectedFile(file);
-      setImageUrl(URL.createObjectURL(file));
-      setTextLines([]);
-      setSelectedBox(undefined);
-      setError('');
-    }
-  };
+    const handlePDFSelect = async (file: File) => {
+        try {
+            const formData = new FormData();
+            formData.append('file', file);
 
-  const handleUpload = async () => {
-    if (!selectedFile) return;
+            // Configure axios request
+            const config = {
+                headers: {
+                    'Content-Type': 'multipart/form-data',
+                },
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity
+            };
 
-    setIsLoading(true);
-    setError('');
-
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-
-    try {
-      const response = await axios.post<OCRResponse>(
-        'http://localhost:3002/ocr',
-        formData,
-        {
-          headers: {
-            'Content-Type': 'multipart/form-data',
-          },
+            const response = await axios.post(
+                `${API_BASE_URL}/pdf-info`,
+                formData,
+                config
+            );
+            
+            setPdfInfo({
+                ...response.data,
+                file_blob: file // Store the file for later use
+            });
+            
+            // Reset processing state
+            setProcessingState({
+                isProcessing: false,
+                currentPage: 0,
+                processedPages: [],
+                results: {},
+                pageImages: {},
+                selectedBox: undefined,
+                error: undefined
+            });
+        } catch (error: any) {
+            console.error('Error getting PDF info:', error);
+            let errorMessage = 'Failed to load PDF file. Please try again.';
+            
+            if (error.response) {
+                // Server responded with error
+                errorMessage = error.response.data.detail || errorMessage;
+            } else if (error.request) {
+                // Request made but no response
+                errorMessage = 'Could not connect to server. Please check your connection.';
+            }
+            
+            setProcessingState(prev => ({
+                ...prev,
+                error: errorMessage
+            }));
         }
-      );
+    };
 
-      setTextLines(response.data.results[0].text_lines);
-    } catch (err) {
-      setError('Failed to process image. Please try again.');
-      console.error(err);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+    const handlePageSelect = async (selection: string) => {
+        if (!pdfInfo) return;
 
-  const handleBoxClick = (textLine: TextLine) => {
-    setSelectedBox(textLine);
-  };
+        setProcessingState(prev => ({
+            ...prev,
+            isProcessing: true,
+            error: undefined,
+        }));
 
-  return (
-    <main className="flex flex-col h-screen">
-      {/* Fixed Header */}
-      <div className="p-8 bg-white border-b">
-        <div className="space-y-4">
-          <h1 className="text-3xl font-bold">Engineering Drawing OCR</h1>
-          <div className="flex gap-4 items-center">
-            <input
-              type="file"
-              accept="image/*"
-              onChange={handleFileChange}
-              className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-            />
-            <button
-              onClick={handleUpload}
-              disabled={!selectedFile || isLoading}
-              className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed whitespace-nowrap"
-            >
-              {isLoading ? 'Processing...' : 'Process Image'}
-            </button>
-          </div>
-          {error && (
-            <div className="text-red-500 bg-red-50 p-3 rounded">{error}</div>
-          )}
-        </div>
-      </div>
+        try {
+            const formData = new FormData();
+            formData.append('file', new File([pdfInfo.file_blob], pdfInfo.file_name));
+            formData.append('page_selection', selection);
 
-      {/* Content Area */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Image Section - Fixed */}
-        <div className="flex-1 p-8 overflow-hidden">
-          {imageUrl && (
-            <div className="h-full flex items-center justify-center">
-              <ImageAnnotator
-                imageUrl={imageUrl}
-                textLines={textLines}
-                onBoxClick={handleBoxClick}
-                selectedBox={selectedBox}
-              />
+            const response = await axios.post<PDFProcessingResult>(
+                `${API_BASE_URL}/process-pdf`,
+                formData
+            );
+
+            const results: Record<number, OCRResult[]> = {};
+            response.data.processed_pages.forEach(page => {
+                results[page.page] = page.ocr_data;
+            });
+
+            const processedPages = response.data.processed_pages.map(p => p.page);
+            
+            setProcessingState(prev => ({
+                ...prev,
+                isProcessing: false,
+                currentPage: processedPages[0] || 0,
+                processedPages,
+                results,
+            }));
+
+            // Fetch images for all processed pages
+            for (const page of processedPages) {
+                await fetchPageImage(page);
+            }
+        } catch (error) {
+            console.error('Error processing PDF:', error);
+            setProcessingState(prev => ({
+                ...prev,
+                isProcessing: false,
+                error: 'Failed to process PDF. Please try again.'
+            }));
+        }
+    };
+
+    const fetchPageImage = async (page: number) => {
+        if (!pdfInfo?.file_blob) return;
+
+        try {
+            const formData = new FormData();
+            formData.append('file', pdfInfo.file_blob);
+            formData.append('page', page.toString());
+
+            const response = await axios.post(
+                `${API_BASE_URL}/get-page-image`,
+                formData,
+                {
+                    headers: {
+                        'Content-Type': 'multipart/form-data',
+                    },
+                }
+            );
+
+            setProcessingState(prev => ({
+                ...prev,
+                pageImages: {
+                    ...prev.pageImages,
+                    [page]: response.data.image
+                }
+            }));
+        } catch (error) {
+            console.error('Error fetching page image:', error);
+        }
+    };
+
+    const handlePageChange = async (page: number) => {
+        setProcessingState(prev => ({
+            ...prev,
+            currentPage: page,
+            selectedBox: undefined, // Clear selection when changing pages
+        }));
+
+        // Fetch page image if not already cached
+        if (!processingState.pageImages[page]) {
+            await fetchPageImage(page);
+        }
+    };
+
+    const handleBoxClick = (textLine: OCRTextLine) => {
+        setProcessingState(prev => ({
+            ...prev,
+            selectedBox: textLine
+        }));
+    };
+
+    return (
+        <main className="min-h-screen bg-gray-50">
+            <div className="max-w-7xl mx-auto px-4 py-8">
+                <h1 className="text-3xl font-bold text-gray-900 mb-8 text-center">
+                    Engineering Drawing Text Extraction
+                </h1>
+
+                {/* PDF Upload and Page Selection */}
+                <PDFViewer
+                    onPDFSelect={handlePDFSelect}
+                    onPageSelect={handlePageSelect}
+                    processingState={processingState}
+                    pdfInfo={pdfInfo}
+                />
+
+                {/* Content Area */}
+                {processingState.processedPages.length > 0 && (
+                    <div className="mt-8 space-y-4">
+                        {/* Page Tabs */}
+                        <PageTabs
+                            pages={processingState.processedPages}
+                            currentPage={processingState.currentPage}
+                            onPageChange={handlePageChange}
+                        />
+
+                        {/* Main Content */}
+                        <div className="flex gap-4 h-[calc(100vh-400px)] min-h-[500px]">
+                            {/* PDF Preview with Annotations */}
+                            <div className="flex-1 bg-white rounded-lg shadow-sm overflow-hidden">
+                                {processingState.currentPage > 0 ? (
+                                    <ImageAnnotator
+                                        pageImage={processingState.pageImages[processingState.currentPage]}
+                                        ocrResults={processingState.results[processingState.currentPage] || []}
+                                        onBoxClick={handleBoxClick}
+                                        selectedBox={processingState.selectedBox}
+                                    />
+                                ) : (
+                                    <div className="flex items-center justify-center h-full text-gray-500">
+                                        {processingState.isProcessing ? (
+                                            <div className="flex flex-col items-center gap-2">
+                                                <svg className="animate-spin h-8 w-8" viewBox="0 0 24 24">
+                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                                                </svg>
+                                                <span>Processing PDF...</span>
+                                            </div>
+                                        ) : (
+                                            <span>Select pages to process</span>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Text Sidebar */}
+                            <div className="w-96 bg-white rounded-lg shadow-sm overflow-hidden">
+                                <TextSidebar
+                                    ocrResults={processingState.results[processingState.currentPage] || []}
+                                    onTextClick={handleBoxClick}
+                                    selectedText={processingState.selectedBox}
+                                />
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
-          )}
-        </div>
-
-        {/* Sidebar - Scrollable */}
-        <div className="w-96 border-l flex-shrink-0 overflow-hidden">
-          <TextSidebar
-            textLines={textLines}
-            onTextClick={handleBoxClick}
-            selectedText={selectedBox}
-          />
-        </div>
-      </div>
-    </main>
-  );
+        </main>
+    );
 }

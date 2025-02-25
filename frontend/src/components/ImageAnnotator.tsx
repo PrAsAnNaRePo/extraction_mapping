@@ -1,35 +1,53 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { TextLine } from '@/types/ocr';
+import { OCRResult, OCRTextLine } from '@/types/pdf';
 
 interface ImageAnnotatorProps {
-  imageUrl: string;
-  textLines: TextLine[];
-  onBoxClick: (textLine: TextLine) => void;
-  selectedBox?: TextLine;
+  imageUrl?: string;
+  ocrResults: OCRResult[];
+  onBoxClick?: (textLine: OCRTextLine) => void;
+  selectedBox?: OCRTextLine;
+  pageImage?: string;  // base64 encoded image
 }
 
-export default function ImageAnnotator({ imageUrl, textLines, onBoxClick, selectedBox }: ImageAnnotatorProps) {
+export default function ImageAnnotator({ imageUrl, ocrResults, onBoxClick, selectedBox, pageImage }: ImageAnnotatorProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [scale, setScale] = useState(1);
   const [image, setImage] = useState<HTMLImageElement | null>(null);
-  const [hoveredBox, setHoveredBox] = useState<TextLine | null>(null);
+  const [hoveredBox, setHoveredBox] = useState<OCRTextLine | null>(null);
+  const [error, setError] = useState<string>();
+  
+  // Flatten all text lines from all OCR results
+  const textLines = ocrResults.flatMap(result => result.text_lines);
 
   useEffect(() => {
-    const img = new Image();
-    img.src = imageUrl;
-    img.onload = () => {
-      setImage(img);
-      
-      // Calculate scale to fit the image in the viewport
-      const maxWidth = window.innerWidth * 0.7;
-      const maxHeight = window.innerHeight * 0.8;
-      const scaleX = maxWidth / img.width;
-      const scaleY = maxHeight / img.height;
-      setScale(Math.min(scaleX, scaleY));
+    const loadImage = (src: string) => {
+      const img = new Image();
+      img.src = src;
+      img.onload = () => {
+        setImage(img);
+        setError(undefined);
+        
+        // Calculate scale to fit the image in the viewport
+        const maxWidth = window.innerWidth * 0.7;
+        const maxHeight = window.innerHeight * 0.8;
+        const scaleX = maxWidth / img.width;
+        const scaleY = maxHeight / img.height;
+        setScale(Math.min(scaleX, scaleY));
+      };
+      img.onerror = () => {
+        setError('Failed to load image');
+        setImage(null);
+      };
     };
-  }, [imageUrl]);
+
+    if (pageImage) {
+      loadImage(pageImage);
+    } else if (imageUrl) {
+      loadImage(imageUrl);
+    }
+  }, [imageUrl, pageImage]);
 
   useEffect(() => {
     if (!canvasRef.current || !image) return;
@@ -135,18 +153,42 @@ export default function ImageAnnotator({ imageUrl, textLines, onBoxClick, select
     setHoveredBox(null);
   };
 
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-full text-red-500">
+        {error}
+      </div>
+    );
+  }
+
+  if (!image) {
+    return (
+      <div className="flex items-center justify-center h-full text-gray-500">
+        <div className="flex flex-col items-center gap-2">
+          <svg className="animate-spin h-8 w-8" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+          </svg>
+          <span>Loading page...</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <canvas
-      ref={canvasRef}
-      onClick={handleCanvasClick}
-      onMouseMove={handleCanvasMouseMove}
-      onMouseLeave={handleCanvasMouseLeave}
-      style={{
-        maxWidth: '100%',
-        maxHeight: 'calc(100vh - 200px)', // Account for header padding
-        cursor: 'pointer',
-        objectFit: 'contain',
-      }}
-    />
+    <div className="relative w-full h-full flex items-center justify-center bg-gray-100">
+      <canvas
+        ref={canvasRef}
+        onClick={handleCanvasClick}
+        onMouseMove={handleCanvasMouseMove}
+        onMouseLeave={handleCanvasMouseLeave}
+        style={{
+          maxWidth: '100%',
+          maxHeight: 'calc(100vh - 200px)', // Account for header padding
+          cursor: textLines.length > 0 ? 'pointer' : 'default',
+          objectFit: 'contain',
+        }}
+      />
+    </div>
   );
 }
