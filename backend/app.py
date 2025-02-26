@@ -6,6 +6,7 @@ from surya.recognition import RecognitionPredictor
 from surya.detection import DetectionPredictor
 from PyPDF2 import PdfReader
 from pdf2image import convert_from_bytes
+from table_agent import TableDetector
 import io
 import re
 from typing import List, Dict, Any
@@ -34,6 +35,9 @@ async def add_allow_iframe(request, call_next):
 # Initialize predictors once
 recognition_predictor = RecognitionPredictor()
 detection_predictor = DetectionPredictor()
+
+# Initialize table detector
+table_detector = TableDetector('backend/dynamic_quantized_21.onnx')
 
 def parse_page_selection(page_selection: str, total_pages: int) -> List[int]:
     """Parse page selection string and return list of page numbers."""
@@ -152,9 +156,12 @@ async def process_pdf(
         results = []
         for page_num in selected_pages:
             if page_num in page_images:
-                # Process the image with OCR
+                # Create a version of the image with tables hidden
+                table_hidden_image = table_detector.create_table_hidden_image(page_images[page_num])
+                
+                # Process the table-hidden image with OCR
                 predictions = recognition_predictor(
-                    [page_images[page_num]], 
+                    [table_hidden_image], 
                     [["en"]], 
                     detection_predictor,
                     recognition_batch_size=2,
@@ -219,8 +226,11 @@ async def ocr_endpoint(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=400, detail="Invalid image file")
 
+    # Create a version of the image with tables hidden
+    table_hidden_image = table_detector.create_table_hidden_image(image)
+    
     predictions = recognition_predictor(
-        [image], 
+        [table_hidden_image], 
         [["en"]], 
         detection_predictor,
         recognition_batch_size=2,
