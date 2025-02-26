@@ -8,7 +8,7 @@ import ImageAnnotator from '../components/ImageAnnotator';
 import TextSidebar from '../components/TextSidebar';
 import { PDFProcessingState, PDFInfo, PDFProcessingResult, OCRResult } from '../types/pdf';
 
-const API_BASE_URL = 'http://localhost:3002';
+const API_BASE_URL = 'http://localhost:3002'; // Backend server URL
 
 export default function Home() {
     const [pdfInfo, setPdfInfo] = useState<PDFInfo>();
@@ -86,7 +86,7 @@ export default function Home() {
 
         try {
             const formData = new FormData();
-            formData.append('file', new File([pdfInfo.file_blob], pdfInfo.file_name));
+            formData.append('file', pdfInfo.file_blob);
             formData.append('page_selection', selection);
 
             const response = await axios.post<PDFProcessingResult>(
@@ -113,12 +113,22 @@ export default function Home() {
             for (const page of processedPages) {
                 await fetchPageImage(page);
             }
-        } catch (error) {
+        } catch (error: any) {
             console.error('Error processing PDF:', error);
+            let errorMessage = 'Failed to process PDF. Please try again.';
+            
+            if (error.response) {
+                // Server responded with error
+                errorMessage = error.response.data.detail || errorMessage;
+            } else if (error.request) {
+                // Request made but no response
+                errorMessage = 'Could not connect to server. Please check your connection.';
+            }
+            
             setProcessingState(prev => ({
                 ...prev,
                 isProcessing: false,
-                error: 'Failed to process PDF. Please try again.'
+                error: errorMessage
             }));
         }
     };
@@ -148,8 +158,18 @@ export default function Home() {
                     [page]: response.data.image
                 }
             }));
-        } catch (error) {
+        } catch (error: any) {
             console.error('Error fetching page image:', error);
+            let errorMessage = 'Failed to fetch page image.';
+            
+            if (error.response) {
+                errorMessage = error.response.data.detail || errorMessage;
+            }
+            
+            setProcessingState(prev => ({
+                ...prev,
+                error: errorMessage
+            }));
         }
     };
 
@@ -198,10 +218,10 @@ export default function Home() {
                             onPageChange={handlePageChange}
                         />
 
-                        {/* Main Content */}
-                        <div className="flex gap-4 h-[calc(100vh-400px)] min-h-[500px]">
-                            {/* PDF Preview with Annotations */}
-                            <div className="flex-1 bg-white rounded-lg shadow-sm overflow-hidden">
+                        {/* Main Content - Improved Layout */}
+                        <div className="flex flex-col gap-4">
+                            {/* Full-width Image View */}
+                            <div className="w-full bg-white rounded-lg shadow-sm overflow-hidden" style={{ height: 'calc(70vh - 200px)', minHeight: '500px' }}>
                                 {processingState.currentPage > 0 ? (
                                     <ImageAnnotator
                                         pageImage={processingState.pageImages[processingState.currentPage]}
@@ -226,8 +246,8 @@ export default function Home() {
                                 )}
                             </div>
 
-                            {/* Text Sidebar */}
-                            <div className="w-96 bg-white rounded-lg shadow-sm overflow-hidden">
+                            {/* Text Results - Horizontal Layout */}
+                            <div className="w-full bg-white rounded-lg shadow-sm overflow-hidden" style={{ height: 'calc(30vh - 100px)', minHeight: '200px' }}>
                                 <TextSidebar
                                     ocrResults={processingState.results[processingState.currentPage] || []}
                                     onTextClick={handleBoxClick}

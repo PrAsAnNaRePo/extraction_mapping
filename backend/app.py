@@ -17,7 +17,7 @@ app = FastAPI()
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:59884"],  # Frontend URL
+    allow_origins=["http://localhost:51560", "http://localhost:59343", "http://localhost:3003", "*"],  # Frontend URLs
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -135,12 +135,24 @@ async def process_pdf(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-        # Convert PDF pages to images
-        images = convert_from_bytes(
-            contents,
-            first_page=min(selected_pages),
-            last_page=max(selected_pages)
-        )
+        # Convert PDF pages to images with additional options for better compatibility
+        try:
+            images = convert_from_bytes(
+                contents,
+                first_page=min(selected_pages),
+                last_page=max(selected_pages),
+                dpi=200,  # Higher DPI for better quality
+                fmt='png',  # Use PNG format for better quality
+                thread_count=2,  # Use multiple threads for faster processing
+                use_cropbox=True,  # Use cropbox instead of mediabox
+                strict=False  # Less strict parsing for better compatibility
+            )
+        except Exception as convert_error:
+            print(f"PDF Conversion Error: {str(convert_error)}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Error converting PDF to images: {str(convert_error)}"
+            )
 
         # Map converted images to selected pages
         page_images = dict(zip(
@@ -157,8 +169,8 @@ async def process_pdf(
                     [page_images[page_num]], 
                     [["en"]], 
                     detection_predictor,
-                    recognition_batch_size=2,
-                    detection_batch_size=2
+                    recognition_batch_size=16,
+                    detection_batch_size=16
                 )
                 
                 # Add page results
@@ -185,12 +197,24 @@ async def get_page_image(
     try:
         contents = await file.read()
         
-        # Convert specific page to image
-        images = convert_from_bytes(
-            contents,
-            first_page=page,
-            last_page=page
-        )
+        # Convert specific page to image with improved options
+        try:
+            images = convert_from_bytes(
+                contents,
+                first_page=page,
+                last_page=page,
+                dpi=200,  # Higher DPI for better quality
+                fmt='png',  # Use PNG format for better quality
+                thread_count=2,  # Use multiple threads for faster processing
+                use_cropbox=True,  # Use cropbox instead of mediabox
+                strict=False  # Less strict parsing for better compatibility
+            )
+        except Exception as convert_error:
+            print(f"PDF Conversion Error: {str(convert_error)}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Error converting PDF to image: {str(convert_error)}"
+            )
         
         if not images:
             raise HTTPException(status_code=404, detail="Page not found")
@@ -223,8 +247,8 @@ async def ocr_endpoint(file: UploadFile = File(...)):
         [image], 
         [["en"]], 
         detection_predictor,
-        recognition_batch_size=2,
-        detection_batch_size=2
+        recognition_batch_size=16,
+        detection_batch_size=16
     )
     serialized = [serialize_ocr_result(pred) for pred in predictions]
     return {"results": serialized}

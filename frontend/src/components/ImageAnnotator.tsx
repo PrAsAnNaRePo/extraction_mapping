@@ -17,7 +17,8 @@ export default function ImageAnnotator({ imageUrl, ocrResults, onBoxClick, selec
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [hoveredBox, setHoveredBox] = useState<OCRTextLine | null>(null);
   const [error, setError] = useState<string>();
-  
+  const [zoomLevel, setZoomLevel] = useState(1); // Moved here
+
   // Flatten all text lines from all OCR results
   const textLines = ocrResults.flatMap(result => result.text_lines);
 
@@ -90,43 +91,45 @@ export default function ImageAnnotator({ imageUrl, ocrResults, onBoxClick, selec
     });
   }, [image, textLines, selectedBox, hoveredBox, scale]);
 
+  const handleZoomIn = () => {
+    setZoomLevel(prev => Math.min(prev + 0.25, 3));
+  };
+  
+  const handleZoomOut = () => {
+    setZoomLevel(prev => Math.max(prev - 0.25, 0.5));
+  };
+  
+  const handleResetZoom = () => {
+    setZoomLevel(1);
+  };
+
   const getMousePosition = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!canvasRef.current) return null;
 
     const rect = canvasRef.current.getBoundingClientRect();
-    // Calculate the ratio of the canvas display size to its actual size
     const displayToActualRatio = {
       x: canvasRef.current.width / rect.width,
       y: canvasRef.current.height / rect.height
     };
 
-    // Get position in display coordinates
     const displayX = e.clientX - rect.left;
     const displayY = e.clientY - rect.top;
 
-    // Convert to actual canvas coordinates
-    const actualX = displayX * displayToActualRatio.x;
-    const actualY = displayY * displayToActualRatio.y;
-
-    // Convert to image coordinates
     return {
-      x: actualX / scale,
-      y: actualY / scale
+      x: (displayX * displayToActualRatio.x) / scale,
+      y: (displayY * displayToActualRatio.y) / scale
     };
   };
 
   const findBoxAtPosition = (x: number, y: number) => {
-    // Sort boxes by area (ascending) so smaller boxes get priority
     const sortedBoxes = [...textLines].sort((a, b) => {
       const areaA = (a.bbox[2] - a.bbox[0]) * (a.bbox[3] - a.bbox[1]);
       const areaB = (b.bbox[2] - b.bbox[0]) * (b.bbox[3] - b.bbox[1]);
       return areaA - areaB;
     });
 
-    // Find the smallest box that contains the point
     return sortedBoxes.find((line) => {
       const [x1, y1, x2, y2] = line.bbox;
-      // Add a small padding (1 pixel) to make selection easier
       return x >= (x1 - 1) && x <= (x2 + 1) && y >= (y1 - 1) && y <= (y2 + 1);
     });
   };
@@ -134,9 +137,8 @@ export default function ImageAnnotator({ imageUrl, ocrResults, onBoxClick, selec
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const pos = getMousePosition(e);
     if (!pos) return;
-
     const clickedBox = findBoxAtPosition(pos.x, pos.y);
-    if (clickedBox) {
+    if (clickedBox && onBoxClick) {
       onBoxClick(clickedBox);
     }
   };
@@ -144,7 +146,6 @@ export default function ImageAnnotator({ imageUrl, ocrResults, onBoxClick, selec
   const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const pos = getMousePosition(e);
     if (!pos) return;
-
     const hovered = findBoxAtPosition(pos.x, pos.y);
     setHoveredBox(hovered || null);
   };
@@ -176,19 +177,69 @@ export default function ImageAnnotator({ imageUrl, ocrResults, onBoxClick, selec
   }
 
   return (
-    <div className="relative w-full h-full flex items-center justify-center bg-gray-100">
-      <canvas
-        ref={canvasRef}
-        onClick={handleCanvasClick}
-        onMouseMove={handleCanvasMouseMove}
-        onMouseLeave={handleCanvasMouseLeave}
-        style={{
-          maxWidth: '100%',
-          maxHeight: 'calc(100vh - 200px)', // Account for header padding
-          cursor: textLines.length > 0 ? 'pointer' : 'default',
-          objectFit: 'contain',
-        }}
-      />
+    <div className="relative w-full h-full flex flex-col bg-gray-100">
+      {/* Controls */}
+      <div className="bg-white p-2 border-b flex items-center justify-between">
+        <div className="flex items-center space-x-2">
+          <button 
+            onClick={handleZoomOut}
+            className="p-1 rounded hover:bg-gray-100 text-gray-700"
+            title="Zoom Out"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 12H4" />
+            </svg>
+          </button>
+          
+          <span className="text-sm font-medium">{Math.round(zoomLevel * 100)}%</span>
+          
+          <button 
+            onClick={handleZoomIn}
+            className="p-1 rounded hover:bg-gray-100 text-gray-700"
+            title="Zoom In"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+          </button>
+          
+          <button 
+            onClick={handleResetZoom}
+            className="p-1 rounded hover:bg-gray-100 text-gray-700 ml-2"
+            title="Reset Zoom"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
+        </div>
+        
+        {selectedBox && (
+          <div className="text-sm text-gray-600">
+            Selected: "{selectedBox.text.substring(0, 30)}{selectedBox.text.length > 30 ? '...' : ''}"
+          </div>
+        )}
+        
+        <div className="text-sm text-gray-600">
+          {textLines.length} text elements detected
+        </div>
+      </div>
+      
+      {/* Canvas Container with Overflow */}
+      <div className="flex-1 overflow-auto relative flex items-center justify-center">
+        <canvas
+          ref={canvasRef}
+          onClick={handleCanvasClick}
+          onMouseMove={handleCanvasMouseMove}
+          onMouseLeave={handleCanvasMouseLeave}
+          style={{
+            transform: `scale(${zoomLevel})`,
+            transformOrigin: 'center center',
+            transition: 'transform 0.2s ease',
+            cursor: textLines.length > 0 ? 'pointer' : 'default',
+          }}
+        />
+      </div>
     </div>
   );
 }

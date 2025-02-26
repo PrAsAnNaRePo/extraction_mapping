@@ -1,6 +1,7 @@
 export interface PDFInfo {
     total_pages: number;
     file_name: string;
+    file_blob?: File; // Added to store the file for later use
 }
 
 export interface OCRTextLine {
