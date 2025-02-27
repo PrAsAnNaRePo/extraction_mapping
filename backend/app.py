@@ -6,8 +6,11 @@ from surya.recognition import RecognitionPredictor
 from surya.detection import DetectionPredictor
 from PyPDF2 import PdfReader
 from pdf2image import convert_from_bytes
+from table_agent import TableDetector
+from table_extract import TOCRAgent
 import io
 import re
+import os
 from typing import List, Dict, Any
 from pydantic import BaseModel
 import base64
@@ -17,7 +20,7 @@ app = FastAPI()
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:59884"],  # Frontend URL
+    allow_origins=["http://localhost:3001"],  # Frontend URL
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -34,6 +37,41 @@ async def add_allow_iframe(request, call_next):
 # Initialize predictors once
 recognition_predictor = RecognitionPredictor()
 detection_predictor = DetectionPredictor()
+
+# Initialize table detector
+table_detector = TableDetector('/media/prasanna/codes/iCoffee/extraction_mapping/extraction_mapping/backend/dynamic_quantized_21.onnx')
+
+# Initialize table extraction agent with system prompt
+system_prompt = """
+You are a specialized table extraction assistant. Your task is to accurately extract tables from images of engineering drawings.
+
+Guidelines:
+1. Analyze the image carefully to identify table structures.
+2. Extract all rows and columns, preserving their relationships.
+3. Output the table in HTML format with proper <table>, <tr>, and <td> tags.
+4. Preserve the exact text as it appears, including any special characters or formatting.
+5. If text is unclear, use your best judgment and indicate uncertainty.
+6. If multiple tables are present, extract each one separately.
+7. Include table headers if they are present.
+
+The output format MUST be:
+<final>
+<table>
+<tr><td>Header1</td><td>Header2</td>...</tr>
+<tr><td>Row1Col1</td><td>Row1Col2</td>...</tr>
+...
+</table>
+</final>
+
+IMPORTANT:
+- Wrap the HTML output with <final></final> tags for proper parsing.
+- Make sure to include the complete <table></table> tags.
+- The table markup must be valid HTML.
+- Do not include any explanations or additional text, ONLY the HTML table inside the final tags.
+"""
+
+# Initialize table OCR agent
+table_ocr_agent = TOCRAgent(system_prompt)
 
 def parse_page_selection(page_selection: str, total_pages: int) -> List[int]:
     """Parse page selection string and return list of page numbers."""
@@ -139,7 +177,7 @@ async def process_pdf(
         images = convert_from_bytes(
             contents,
             first_page=min(selected_pages),
-            last_page=max(selected_pages)
+            last_page=max(selected_pages),
         )
 
         # Map converted images to selected pages
@@ -152,19 +190,58 @@ async def process_pdf(
         results = []
         for page_num in selected_pages:
             if page_num in page_images:
-                # Process the image with OCR
+                image = page_images[page_num]
+                
+                # Detect tables in the image
+                try:
+                    bbox_result = table_detector.detect_bbox(image)
+                    table_data = bbox_result["bbox_data"]
+                    table_html = []
+                    
+                    # Extract tables if any are detected
+                    if table_data:
+                        # Convert image to base64
+                        img_byte_arr = io.BytesIO()
+                        image.save(img_byte_arr, format='PNG')
+                        img_byte_arr = img_byte_arr.getvalue()
+                        base64_image = base64.b64encode(img_byte_arr).decode('utf-8')
+                        
+                        # Extract table content using Claude
+                        table_html, usage = table_ocr_agent.extract_table(
+                            base64_image, 
+                            file.filename, 
+                            page_num
+                        )
+                        
+                        # Debug output to see what's returned
+                        print(f"Extracted {len(table_html)} HTML table(s) for page {page_num}")
+                        for i, html in enumerate(table_html):
+                            print(f"Table {i+1} HTML (first 100 chars): {html[:100]}...")
+                except Exception as table_error:
+                    print(f"Error detecting tables: {str(table_error)}")
+                    table_data = []
+                    table_html = []
+                
+                # Create a version of the image with tables hidden
+                table_hidden_image = table_detector.create_table_hidden_image(image)
+                
+                # Process the table-hidden image with OCR
                 predictions = recognition_predictor(
-                    [page_images[page_num]], 
+                    [table_hidden_image], 
                     [["en"]], 
                     detection_predictor,
-                    recognition_batch_size=2,
-                    detection_batch_size=2
+                    recognition_batch_size=16,
+                    detection_batch_size=16
                 )
                 
                 # Add page results
                 results.append({
                     "page": page_num,
-                    "ocr_data": [serialize_ocr_result(pred) for pred in predictions]
+                    "ocr_data": [serialize_ocr_result(pred) for pred in predictions],
+                    "tables": {
+                        "bbox_data": table_data if "table_data" in locals() else [],
+                        "html": table_html
+                    }
                 })
 
         return {
@@ -209,22 +286,103 @@ async def get_page_image(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing page: {str(e)}")
 
+# Endpoint for extracting tables from image
+@app.post("/extract-tables")
+async def extract_tables_endpoint(
+    file: UploadFile = File(...),
+    file_name: str = Form("document.pdf"),
+    page_num: int = Form(1)
+):
+    """Extract tables from an image and return HTML representation."""
+    try:
+        contents = await file.read()
+        image = Image.open(io.BytesIO(contents))
+        
+        # Get table detection results
+        bbox_result = table_detector.detect_bbox(image)
+        
+        if not bbox_result["bbox_data"]:
+            return {"tables": [], "message": "No tables detected in the image"}
+        
+        # Convert PIL image to base64 for Claude
+        img_byte_arr = io.BytesIO()
+        image.save(img_byte_arr, format='PNG')
+        img_byte_arr = img_byte_arr.getvalue()
+        base64_image = base64.b64encode(img_byte_arr).decode('utf-8')
+        
+        # Extract tables using Claude
+        tables, usage = table_ocr_agent.extract_table(base64_image, file_name, page_num)
+        
+        return {
+            "tables": tables,
+            "num_tables": len(tables),
+            "bbox_data": bbox_result["bbox_data"],
+            "usage": {
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error extracting tables: {str(e)}")
+
 # Keep the original OCR endpoint for backward compatibility
 @app.post("/ocr")
 async def ocr_endpoint(file: UploadFile = File(...)):
-    """Process a single image file."""
+    """Process a single image file with table extraction."""
     try:
         contents = await file.read()
         image = Image.open(io.BytesIO(contents))
     except Exception as e:
         raise HTTPException(status_code=400, detail="Invalid image file")
 
+    # Detect tables in the image
+    try:
+        bbox_result = table_detector.detect_bbox(image)
+        table_data = bbox_result["bbox_data"]
+        table_html = []
+        
+        # Extract tables if any are detected
+        if table_data:
+            # Convert image to base64
+            img_byte_arr = io.BytesIO()
+            image.save(img_byte_arr, format='PNG')
+            img_byte_arr = img_byte_arr.getvalue()
+            base64_image = base64.b64encode(img_byte_arr).decode('utf-8')
+            
+            # Extract table content using Claude
+            table_html, usage = table_ocr_agent.extract_table(
+                base64_image, 
+                file.filename, 
+                1  # Default page number for single images
+            )
+            
+            # Debug output
+            print(f"OCR endpoint: Extracted {len(table_html)} HTML table(s)")
+            for i, html in enumerate(table_html):
+                print(f"Table {i+1} HTML (first 100 chars): {html[:100]}...")
+    except Exception as table_error:
+        print(f"Error detecting tables: {str(table_error)}")
+        table_data = []
+        table_html = []
+
+    # Create a version of the image with tables hidden
+    table_hidden_image = table_detector.create_table_hidden_image(image)
+    
+    # Process with OCR
     predictions = recognition_predictor(
-        [image], 
+        [table_hidden_image], 
         [["en"]], 
         detection_predictor,
-        recognition_batch_size=2,
-        detection_batch_size=2
+        recognition_batch_size=16,
+        detection_batch_size=16
     )
     serialized = [serialize_ocr_result(pred) for pred in predictions]
-    return {"results": serialized}
+    
+    # Return OCR results along with table information
+    return {
+        "results": serialized,
+        "tables": {
+            "bbox_data": table_data if "table_data" in locals() else [],
+            "html": table_html
+        }
+    }

@@ -6,7 +6,8 @@ import PDFViewer from '../components/PDFViewer';
 import PageTabs from '../components/PageTabs';
 import ImageAnnotator from '../components/ImageAnnotator';
 import TextSidebar from '../components/TextSidebar';
-import { PDFProcessingState, PDFInfo, PDFProcessingResult, OCRResult } from '../types/pdf';
+import TableViewer from '../components/TableViewer';
+import { PDFProcessingState, PDFInfo, PDFProcessingResult, OCRResult, TableData, TableBBox, OCRTextLine } from '../types/pdf';
 
 const API_BASE_URL = 'http://localhost:3002';
 
@@ -17,8 +18,11 @@ export default function Home() {
         currentPage: 0,
         processedPages: [],
         results: {},
+        tables: {},
         pageImages: {} as Record<number, string>,
         selectedBox: undefined,
+        selectedTable: undefined,
+        showTables: true,
     });
 
     const handlePDFSelect = async (file: File) => {
@@ -52,8 +56,11 @@ export default function Home() {
                 currentPage: 0,
                 processedPages: [],
                 results: {},
+                tables: {},
                 pageImages: {},
                 selectedBox: undefined,
+                selectedTable: undefined,
+                showTables: true,
                 error: undefined
             });
         } catch (error: any) {
@@ -95,8 +102,48 @@ export default function Home() {
             );
 
             const results: Record<number, OCRResult[]> = {};
+            const tables: Record<number, TableData> = {};
+            
+            // Utility function to normalize table data
+            const normalizeTableData = (tableData: any): TableData => {
+                // Default empty values
+                const normalized: TableData = { 
+                    bbox_data: [], 
+                    html: [] 
+                };
+                
+                if (!tableData) return normalized;
+                
+                // Handle bbox_data
+                if (Array.isArray(tableData.bbox_data)) {
+                    normalized.bbox_data = tableData.bbox_data;
+                }
+                
+                // Handle html content
+                if (Array.isArray(tableData.html)) {
+                    normalized.html = tableData.html;
+                    
+                    // Log table HTML for debugging
+                    console.log(`Found ${normalized.html.length} table HTML fragments.`);
+                    normalized.html.forEach((html, i) => {
+                        if (html) {
+                            console.log(`Table ${i+1} HTML (first 50 chars): ${html.substring(0, 50)}...`);
+                        } else {
+                            console.log(`Table ${i+1} HTML is empty or null`);
+                        }
+                    });
+                }
+                
+                return normalized;
+            };
+            
             response.data.processed_pages.forEach(page => {
                 results[page.page] = page.ocr_data;
+                tables[page.page] = normalizeTableData(page.tables);
+                
+                // Debug logging to check what's coming from the backend
+                console.log("Page tables data:", page.page, page.tables);
+                console.log("Normalized table data:", tables[page.page]);
             });
 
             const processedPages = response.data.processed_pages.map(p => p.page);
@@ -107,6 +154,7 @@ export default function Home() {
                 currentPage: processedPages[0] || 0,
                 processedPages,
                 results,
+                tables,
             }));
 
             // Fetch images for all processed pages
@@ -158,6 +206,7 @@ export default function Home() {
             ...prev,
             currentPage: page,
             selectedBox: undefined, // Clear selection when changing pages
+            selectedTable: undefined, // Clear table selection when changing pages
         }));
 
         // Fetch page image if not already cached
@@ -169,7 +218,25 @@ export default function Home() {
     const handleBoxClick = (textLine: OCRTextLine) => {
         setProcessingState(prev => ({
             ...prev,
-            selectedBox: textLine
+            selectedBox: textLine,
+            selectedTable: undefined // Clear table selection when text is selected
+        }));
+    };
+    
+    const handleTableClick = (tableBox: TableBBox) => {
+        setProcessingState(prev => ({
+            ...prev,
+            selectedTable: tableBox,
+            selectedBox: undefined // Clear text selection when table is selected
+        }));
+    };
+    
+    const toggleViewMode = () => {
+        setProcessingState(prev => ({
+            ...prev,
+            showTables: !prev.showTables,
+            selectedBox: undefined,
+            selectedTable: undefined
         }));
     };
 
@@ -198,6 +265,24 @@ export default function Home() {
                             onPageChange={handlePageChange}
                         />
 
+                        {/* View Toggle Switch */}
+                        <div className="flex justify-end mb-4">
+                            <div className="inline-flex rounded-md shadow-sm">
+                                <button
+                                    onClick={toggleViewMode}
+                                    className={`px-4 py-2 text-sm font-medium ${!processingState.showTables ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-100'} rounded-l-md border border-gray-300`}
+                                >
+                                    Text
+                                </button>
+                                <button
+                                    onClick={toggleViewMode}
+                                    className={`px-4 py-2 text-sm font-medium ${processingState.showTables ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-100'} rounded-r-md border-t border-r border-b border-gray-300`}
+                                >
+                                    Tables
+                                </button>
+                            </div>
+                        </div>
+                        
                         {/* Main Content */}
                         <div className="flex gap-4 h-[calc(100vh-400px)] min-h-[500px]">
                             {/* PDF Preview with Annotations */}
@@ -208,6 +293,10 @@ export default function Home() {
                                         ocrResults={processingState.results[processingState.currentPage] || []}
                                         onBoxClick={handleBoxClick}
                                         selectedBox={processingState.selectedBox}
+                                        tableData={processingState.tables[processingState.currentPage]?.bbox_data || []}
+                                        onTableClick={handleTableClick}
+                                        selectedTable={processingState.selectedTable}
+                                        showTables={processingState.showTables}
                                     />
                                 ) : (
                                     <div className="flex items-center justify-center h-full text-gray-500">
@@ -226,13 +315,21 @@ export default function Home() {
                                 )}
                             </div>
 
-                            {/* Text Sidebar */}
+                            {/* Sidebar - Show either Text or Tables based on mode */}
                             <div className="w-96 bg-white rounded-lg shadow-sm overflow-hidden">
-                                <TextSidebar
-                                    ocrResults={processingState.results[processingState.currentPage] || []}
-                                    onTextClick={handleBoxClick}
-                                    selectedText={processingState.selectedBox}
-                                />
+                                {processingState.showTables ? (
+                                    <TableViewer
+                                        tableData={processingState.tables[processingState.currentPage] || { bbox_data: [], html: [] }}
+                                        onTableClick={handleTableClick}
+                                        selectedTable={processingState.selectedTable}
+                                    />
+                                ) : (
+                                    <TextSidebar
+                                        ocrResults={processingState.results[processingState.currentPage] || []}
+                                        onTextClick={handleBoxClick}
+                                        selectedText={processingState.selectedBox}
+                                    />
+                                )}
                             </div>
                         </div>
                     </div>

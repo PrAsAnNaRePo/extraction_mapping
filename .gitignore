@@ -1,2 +1,4 @@
 ./frontend/package-lock.json
 ./frontend/package.json
+frontend/.next
+frontend/node_modules
