@@ -1,6 +1,7 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Response
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Response, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse
 from PIL import Image
 from surya.recognition import RecognitionPredictor
 from surya.detection import DetectionPredictor
@@ -12,12 +13,16 @@ from typing import List, Dict, Any
 from pydantic import BaseModel
 import base64
 
+class TextEdit(BaseModel):
+    page: int
+    text_lines: List[Dict[str, Any]]
+
 app = FastAPI()
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:51560", "http://localhost:59343", "http://localhost:3003", "*"],  # Frontend URLs
+    allow_origins=["http://localhost:51560", "http://localhost:59343", "http://localhost:3000", "*"],  # Frontend URLs
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -141,12 +146,14 @@ async def process_pdf(
                 contents,
                 first_page=min(selected_pages),
                 last_page=max(selected_pages),
-                dpi=200,  # Higher DPI for better quality
+                dpi=225,  # Higher DPI for better quality
                 fmt='png',  # Use PNG format for better quality
                 thread_count=2,  # Use multiple threads for faster processing
                 use_cropbox=True,  # Use cropbox instead of mediabox
                 strict=False  # Less strict parsing for better compatibility
             )
+            for img in images:
+                print(img.size)
         except Exception as convert_error:
             print(f"PDF Conversion Error: {str(convert_error)}")
             raise HTTPException(
@@ -252,3 +259,31 @@ async def ocr_endpoint(file: UploadFile = File(...)):
     )
     serialized = [serialize_ocr_result(pred) for pred in predictions]
     return {"results": serialized}
+    
+# Add an endpoint to save edited text
+@app.post("/save-edited-text")
+async def save_edited_text(text_edit: TextEdit):
+    """Save edited text for a specific page."""
+    try:
+        # In a real app, you would save this to a database
+        # For now, we'll just return success and the saved data
+        print(f"Saving edited text for page {text_edit.page}")
+        print(f"Text lines: {len(text_edit.text_lines)}")
+        
+        # Return the saved data
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "Text edits saved successfully",
+                "data": {
+                    "page": text_edit.page,
+                    "text_count": len(text_edit.text_lines)
+                }
+            }
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error saving edited text: {str(e)}"
+        )

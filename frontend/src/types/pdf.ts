@@ -9,6 +9,7 @@ export interface OCRTextLine {
     confidence: number;
     bbox: [number, number, number, number];
     polygon: [number, number][];
+    editedText?: string; // Optional field for storing edited text
 }
 
 export interface OCRResult {

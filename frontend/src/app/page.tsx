@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import axios from 'axios';
+import { toast } from 'react-hot-toast';
 import PDFViewer from '../components/PDFViewer';
 import PageTabs from '../components/PageTabs';
 import ImageAnnotator from '../components/ImageAnnotator';
@@ -9,6 +10,29 @@ import TextSidebar from '../components/TextSidebar';
 import { PDFProcessingState, PDFInfo, PDFProcessingResult, OCRResult } from '../types/pdf';
 
 const API_BASE_URL = 'http://localhost:3002'; // Backend server URL
+
+// Function to save edited text to the backend
+const saveEditedText = async (page: number, textLines: OCRTextLine[]) => {
+    try {
+        const response = await axios.post(
+            `${API_BASE_URL}/save-edited-text`,
+            {
+                page,
+                text_lines: textLines.map(line => ({
+                    text: line.text,
+                    edited_text: line.editedText,
+                    confidence: line.confidence,
+                    bbox: line.bbox,
+                    polygon: line.polygon
+                }))
+            }
+        );
+        return response.data;
+    } catch (error) {
+        console.error('Error saving edited text:', error);
+        throw error;
+    }
+};
 
 export default function Home() {
     const [pdfInfo, setPdfInfo] = useState<PDFInfo>();
@@ -192,25 +216,117 @@ export default function Home() {
             selectedBox: textLine
         }));
     };
+    
+    const handleTextEdit = async (textLine: OCRTextLine, newText: string) => {
+        // Special case for saving all edits
+        if (newText === '___SAVE_ALL_TEXTS___') {
+            try {
+                // Get all text lines for the current page
+                const textLinesToSave = processingState.results[processingState.currentPage]?.flatMap(result => result.text_lines) || [];
+                
+                // Save to the backend
+                const result = await saveEditedText(processingState.currentPage, textLinesToSave);
+                
+                // Show success message
+                toast.success('All text changes saved successfully!');
+            } catch (error: any) {
+                toast.error(`Failed to save: ${error.message || 'Unknown error'}`);
+            }
+            return;
+        }
+        
+        // Regular text edit case - use a functional update to ensure we're working with latest state
+        setProcessingState(prevState => {
+            // Create a deep copy of the current results
+            const updatedResults = JSON.parse(JSON.stringify(prevState.results));
+            
+            // Find and update the specific text line
+            if (prevState.currentPage in updatedResults) {
+                updatedResults[prevState.currentPage] = updatedResults[prevState.currentPage].map((result: any) => {
+                    return {
+                        ...result,
+                        text_lines: result.text_lines.map((line: OCRTextLine) => {
+                            // Check if this is the line we want to update (using bbox to compare)
+                            if (line.bbox.toString() === textLine.bbox.toString()) {
+                                return {
+                                    ...line,
+                                    editedText: newText
+                                };
+                            }
+                            return line;
+                        })
+                    };
+                });
+                
+                // Create updated selectedBox with the new text
+                const updatedSelectedBox = {
+                    ...textLine,
+                    editedText: newText
+                };
+                
+                // Return the new state
+                return {
+                    ...prevState,
+                    results: updatedResults,
+                    selectedBox: updatedSelectedBox
+                };
+            }
+            
+            // If we can't find the page, return state unchanged
+            return prevState;
+        });
+    };
 
     return (
         <main className="min-h-screen bg-gray-50">
-            <div className="max-w-7xl mx-auto px-4 py-8">
-                <h1 className="text-3xl font-bold text-gray-900 mb-8 text-center">
-                    Engineering Drawing Text Extraction
+            <div className="max-w-7xl mx-auto px-4 py-6">
+                <h1 className="text-3xl font-bold text-gray-900 mb-6 text-center">
+                    Feature Extraction
                 </h1>
 
-                {/* PDF Upload and Page Selection */}
-                <PDFViewer
-                    onPDFSelect={handlePDFSelect}
-                    onPageSelect={handlePageSelect}
-                    processingState={processingState}
-                    pdfInfo={pdfInfo}
-                />
+                {/* Show upload area only when no pages are processed */}
+                {processingState.processedPages.length === 0 ? (
+                    <div className="mb-6">
+                        <PDFViewer
+                            onPDFSelect={handlePDFSelect}
+                            onPageSelect={handlePageSelect}
+                            processingState={processingState}
+                            pdfInfo={pdfInfo}
+                        />
+                    </div>
+                ) : (
+                    <div className="mb-2 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                            <h2 className="text-lg font-medium text-gray-700">
+                                {pdfInfo?.file_name}
+                            </h2>
+                            <span className="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded">
+                                {processingState.processedPages.length} pages processed
+                            </span>
+                        </div>
+                        <button 
+                            onClick={() => {
+                                // Reset state to show upload form again
+                                setProcessingState({
+                                    isProcessing: false,
+                                    currentPage: 0,
+                                    processedPages: [],
+                                    results: {},
+                                    pageImages: {},
+                                    selectedBox: undefined
+                                });
+                                setPdfInfo(undefined);
+                            }}
+                            className="text-sm px-3 py-1.5 text-gray-600 hover:text-gray-800 hover:bg-gray-100 bg-gray-50 rounded transition"
+                        >
+                            Upload New File
+                        </button>
+                    </div>
+                )}
 
-                {/* Content Area */}
+                {/* Content Area - Only shown when processing is complete */}
                 {processingState.processedPages.length > 0 && (
-                    <div className="mt-8 space-y-4">
+                    <div className="space-y-3">
                         {/* Page Tabs */}
                         <PageTabs
                             pages={processingState.processedPages}
@@ -218,10 +334,10 @@ export default function Home() {
                             onPageChange={handlePageChange}
                         />
 
-                        {/* Main Content - Improved Layout */}
-                        <div className="flex flex-col gap-4">
-                            {/* Full-width Image View */}
-                            <div className="w-full bg-white rounded-lg shadow-sm overflow-hidden" style={{ height: 'calc(70vh - 200px)', minHeight: '500px' }}>
+                        {/* Main Content - Side-by-Side Layout - Full height */}
+                        <div className="flex flex-row gap-4 h-[calc(90vh-150px)] min-h-[650px]">
+                            {/* Image View - Left Side */}
+                            <div className="w-2/3 bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
                                 {processingState.currentPage > 0 ? (
                                     <ImageAnnotator
                                         pageImage={processingState.pageImages[processingState.currentPage]}
@@ -240,17 +356,18 @@ export default function Home() {
                                                 <span>Processing PDF...</span>
                                             </div>
                                         ) : (
-                                            <span>Select pages to process</span>
+                                            <span>Select a page from the tabs above</span>
                                         )}
                                     </div>
                                 )}
                             </div>
 
-                            {/* Text Results - Horizontal Layout */}
-                            <div className="w-full bg-white rounded-lg shadow-sm overflow-hidden" style={{ height: 'calc(30vh - 100px)', minHeight: '200px' }}>
+                            {/* Text Results - Right Side */}
+                            <div className="w-1/3 bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
                                 <TextSidebar
                                     ocrResults={processingState.results[processingState.currentPage] || []}
                                     onTextClick={handleBoxClick}
+                                    onTextEdit={handleTextEdit}
                                     selectedText={processingState.selectedBox}
                                 />
                             </div>
