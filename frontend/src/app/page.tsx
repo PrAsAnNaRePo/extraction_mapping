@@ -1,13 +1,15 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { toast } from 'react-hot-toast';
+import { v4 as uuidv4 } from 'uuid';
 import PDFViewer from '../components/PDFViewer';
 import PageTabs from '../components/PageTabs';
 import ImageAnnotator from '../components/ImageAnnotator';
 import TextSidebar from '../components/TextSidebar';
-import { PDFProcessingState, PDFInfo, PDFProcessingResult, OCRResult } from '../types/pdf';
+import ContentTabs from '../components/ContentTabs';
+import { PDFProcessingState, PDFInfo, PDFProcessingResult, OCRResult, Annotation, AnnotationType, OCRTextLine } from '../types/pdf';
 
 const API_BASE_URL = 'http://localhost:3002'; // Backend server URL
 
@@ -43,6 +45,10 @@ export default function Home() {
         results: {},
         pageImages: {} as Record<number, string>,
         selectedBox: undefined,
+        annotationMode: false,
+        annotations: {},
+        currentAnnotationType: AnnotationType.TEXT,
+        isDrawing: false,
     });
 
     const handlePDFSelect = async (file: File) => {
@@ -78,7 +84,11 @@ export default function Home() {
                 results: {},
                 pageImages: {},
                 selectedBox: undefined,
-                error: undefined
+                error: undefined,
+                annotationMode: false,
+                annotations: {},
+                currentAnnotationType: AnnotationType.TEXT,
+                isDrawing: false
             });
         } catch (error: any) {
             console.error('Error getting PDF info:', error);
@@ -109,34 +119,54 @@ export default function Home() {
         }));
 
         try {
-            const formData = new FormData();
-            formData.append('file', pdfInfo.file_blob);
-            formData.append('page_selection', selection);
-
-            const response = await axios.post<PDFProcessingResult>(
-                `${API_BASE_URL}/process-pdf`,
-                formData
-            );
-
-            const results: Record<number, OCRResult[]> = {};
-            response.data.processed_pages.forEach(page => {
-                results[page.page] = page.ocr_data;
-            });
-
-            const processedPages = response.data.processed_pages.map(p => p.page);
+            // Get total pages from PDF info
+            const total_pages = pdfInfo.total_pages;
+            
+            // Parse page selection
+            let selected_pages: number[] = [];
+            if (selection.toLowerCase() === "all") {
+                selected_pages = Array.from({length: total_pages}, (_, i) => i + 1);
+            } else {
+                // Handle page ranges and individual pages
+                const parts = selection.split(",");
+                for (const part of parts) {
+                    if (part.includes("-")) {
+                        const [start, end] = part.split("-").map(p => parseInt(p.trim()));
+                        for (let i = start; i <= end; i++) {
+                            if (i > 0 && i <= total_pages) {
+                                selected_pages.push(i);
+                            }
+                        }
+                    } else {
+                        const page = parseInt(part.trim());
+                        if (page > 0 && page <= total_pages) {
+                            selected_pages.push(page);
+                        }
+                    }
+                }
+            }
+            
+            // Remove duplicates and sort
+            selected_pages = [...new Set(selected_pages)].sort((a, b) => a - b);
+            
+            if (selected_pages.length === 0) {
+                throw new Error("No valid pages selected");
+            }
             
             setProcessingState(prev => ({
                 ...prev,
                 isProcessing: false,
-                currentPage: processedPages[0] || 0,
-                processedPages,
-                results,
+                currentPage: selected_pages[0] || 0,
+                processedPages: selected_pages,
+                annotationMode: true, // Start in annotation mode
             }));
 
             // Fetch images for all processed pages
-            for (const page of processedPages) {
+            for (const page of selected_pages) {
                 await fetchPageImage(page);
             }
+            
+            toast.success(`${selected_pages.length} pages ready for annotation`);
         } catch (error: any) {
             console.error('Error processing PDF:', error);
             let errorMessage = 'Failed to process PDF. Please try again.';
@@ -147,6 +177,8 @@ export default function Home() {
             } else if (error.request) {
                 // Request made but no response
                 errorMessage = 'Could not connect to server. Please check your connection.';
+            } else if (error.message) {
+                errorMessage = error.message;
             }
             
             setProcessingState(prev => ({
@@ -154,6 +186,8 @@ export default function Home() {
                 isProcessing: false,
                 error: errorMessage
             }));
+            
+            toast.error(errorMessage);
         }
     };
 
@@ -276,6 +310,485 @@ export default function Home() {
             return prevState;
         });
     };
+    
+    // Annotation related handlers
+    const handleAnnotationModeToggle = () => {
+        setProcessingState(prev => ({
+            ...prev,
+            annotationMode: !prev.annotationMode
+        }));
+    };
+
+    const handleAnnotationTypeChange = (type: AnnotationType) => {
+        setProcessingState(prev => ({
+            ...prev,
+            currentAnnotationType: type
+        }));
+    };
+
+    const handleCreateAnnotation = (annotationData: Omit<Annotation, 'id'>) => {
+        const id = uuidv4();
+        const annotation: Annotation = {
+            ...annotationData,
+            id
+        };
+
+        setProcessingState(prev => {
+            // Get current annotations for this page or initialize empty array
+            const pageAnnotations = prev.annotations[prev.currentPage] || [];
+            
+            return {
+                ...prev,
+                annotations: {
+                    ...prev.annotations,
+                    [prev.currentPage]: [...pageAnnotations, annotation]
+                }
+            };
+        });
+
+        // Show success toast
+        toast.success(`${annotationData.type} annotation created`);
+    };
+    
+    const handleUpdateAnnotation = (id: string, bbox: [number, number, number, number]) => {
+        setProcessingState(prev => {
+            // Get current annotations for this page
+            const pageAnnotations = prev.annotations[prev.currentPage] || [];
+            
+            // Find and update the specific annotation
+            const updatedAnnotations = pageAnnotations.map(annotation => {
+                if (annotation.id === id) {
+                    return {
+                        ...annotation,
+                        bbox
+                    };
+                }
+                return annotation;
+            });
+            
+            return {
+                ...prev,
+                annotations: {
+                    ...prev.annotations,
+                    [prev.currentPage]: updatedAnnotations
+                }
+            };
+        });
+    };
+    
+    const handleDeleteAnnotation = (id: string) => {
+        setProcessingState(prev => {
+            // Get current annotations for this page
+            const pageAnnotations = prev.annotations[prev.currentPage] || [];
+            
+            // Filter out the annotation to delete
+            const updatedAnnotations = pageAnnotations.filter(annotation => annotation.id !== id);
+            
+            return {
+                ...prev,
+                annotations: {
+                    ...prev.annotations,
+                    [prev.currentPage]: updatedAnnotations
+                }
+            };
+        });
+        
+        // Show success toast
+        toast.success("Annotation deleted");
+    };
+    
+    const handleSelectAnnotation = (id: string) => {
+        setProcessingState(prev => ({
+            ...prev,
+            selectedAnnotationId: id
+        }));
+    };
+
+    const handleDetectTables = async () => {
+        if (!pdfInfo?.file_blob || processingState.currentPage === 0) return;
+
+        try {
+            setProcessingState(prev => ({
+                ...prev,
+                isProcessing: true
+            }));
+
+            const formData = new FormData();
+            formData.append('file', pdfInfo.file_blob);
+            formData.append('page', processingState.currentPage.toString());
+
+            const response = await axios.post(
+                `${API_BASE_URL}/detect-tables`,
+                formData,
+                {
+                    headers: {
+                        'Content-Type': 'multipart/form-data',
+                    },
+                }
+            );
+
+            // Add detected tables as annotations
+            if (response.data.tables && response.data.tables.length > 0) {
+                setProcessingState(prev => {
+                    // Get current annotations for this page or initialize empty array
+                    const pageAnnotations = prev.annotations[prev.currentPage] || [];
+                    
+                    // Convert detected tables to annotations
+                    const tableAnnotations: Annotation[] = response.data.tables.map((table: any) => ({
+                        id: table.id,
+                        type: AnnotationType.TABLE,
+                        bbox: table.bbox as [number, number, number, number],
+                        processed: false
+                    }));
+                    
+                    return {
+                        ...prev,
+                        isProcessing: false,
+                        annotations: {
+                            ...prev.annotations,
+                            [prev.currentPage]: [...pageAnnotations, ...tableAnnotations]
+                        }
+                    };
+                });
+
+                toast.success(`${response.data.count} tables automatically detected`);
+            } else {
+                setProcessingState(prev => ({
+                    ...prev,
+                    isProcessing: false
+                }));
+                toast.info('No tables detected in this page');
+            }
+        } catch (error: any) {
+            console.error('Error detecting tables:', error);
+            setProcessingState(prev => ({
+                ...prev,
+                isProcessing: false
+            }));
+            
+            let errorMessage = 'Failed to detect tables. Please try again.';
+            if (error.response) {
+                errorMessage = error.response.data.detail || errorMessage;
+            }
+            
+            toast.error(errorMessage);
+        }
+    };
+
+    const handleProcessAnnotations = async () => {
+        const currentPageAnnotations = processingState.annotations[processingState.currentPage] || [];
+        const unprocessedAnnotations = currentPageAnnotations.filter(annotation => !annotation.processed);
+        
+        if (unprocessedAnnotations.length === 0) {
+            toast.info('No unprocessed annotations to process');
+            return;
+        }
+
+        try {
+            setProcessingState(prev => ({
+                ...prev,
+                isProcessing: true
+            }));
+
+            // Show a toast indicating the number of annotations being processed
+            toast.loading(`Processing ${unprocessedAnnotations.length} annotations...`, {
+                id: 'annotations-processing'
+            });
+
+            // Process each annotation in sequence
+            for (const annotation of unprocessedAnnotations) {
+                // Update toast to show current annotation
+                toast.loading(`Processing ${annotation.type} annotation...`, {
+                    id: 'annotations-processing'
+                });
+                
+                try {
+                    // Get the image data for this annotation by cropping from the page image
+                    const croppedImageData = await getCroppedImageData(
+                        processingState.pageImages[processingState.currentPage],
+                        annotation.bbox
+                    );
+
+                    console.log(`Sending ${annotation.type} annotation with data length: ${croppedImageData.length}`);
+                    
+                    // For diagram types, let's provide a better fallback in case of API issues
+                    const sendData = {
+                        id: annotation.id,
+                        type: annotation.type,
+                        bbox: annotation.bbox.map(n => Math.round(n)), // Convert to integers
+                        image_data: croppedImageData
+                    };
+                    
+                    console.log(`Sending ${annotation.type} annotation to server...`);
+                    
+                    // Wrap request in try-catch to handle server errors gracefully
+                    try {
+                        const response = await axios.post(
+                            `${API_BASE_URL}/process-annotation`,
+                            sendData,
+                            {
+                                timeout: 120000, // 120s timeout for AI processing
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                }
+                            }
+                        );
+                        
+                        console.log(`Received response for ${annotation.type}:`, response.data);
+                        
+                        // Check if the response contains an error message - handle all types of response structures
+                        let hasError = false;
+                        let errorMessage = "";
+                        
+                        if (response.data.result) {
+                            // Case 1: Direct error flag in the result
+                            if (response.data.result.error === true) {
+                                hasError = true;
+                                errorMessage = response.data.result.message || "Unknown error";
+                            }
+                            // Case 2: Error message in the diag_description (diagrams)
+                            else if (response.data.result.diag_description && 
+                                    typeof response.data.result.diag_description === 'string' &&
+                                    response.data.result.diag_description.toLowerCase().includes('error')) {
+                                hasError = true;
+                                errorMessage = response.data.result.diag_description;
+                            }
+                            // Case 3: Error in the text field (for text annotations)
+                            else if (Array.isArray(response.data.result) && 
+                                    response.data.result[0] && 
+                                    response.data.result[0].text_lines && 
+                                    response.data.result[0].text_lines[0] &&
+                                    response.data.result[0].text_lines[0].text &&
+                                    response.data.result[0].text_lines[0].text.includes('Error')) {
+                                hasError = true;
+                                errorMessage = response.data.result[0].text_lines[0].text;
+                            }
+                        }
+                        
+                        // Update the annotation with the result (even if there was an error)
+                        setProcessingState(prev => {
+                            const pageAnnotations = [...(prev.annotations[prev.currentPage] || [])];
+                            
+                            // Find and update the processed annotation
+                            const index = pageAnnotations.findIndex(a => a.id === annotation.id);
+                            if (index !== -1) {
+                                pageAnnotations[index] = {
+                                    ...pageAnnotations[index],
+                                    processed: true,
+                                    result: response.data.result,
+                                    hasError: hasError
+                                };
+                            }
+                            
+                            return {
+                                ...prev,
+                                annotations: {
+                                    ...prev.annotations,
+                                    [prev.currentPage]: pageAnnotations
+                                }
+                            };
+                        });
+                        
+                        if (hasError) {
+                            // Show error toast but consider the processing complete
+                            console.warn(`Error detected in ${annotation.type} annotation:`, errorMessage);
+                            toast.error(`Issue with ${annotation.type} annotation: ${errorMessage}`, {
+                                duration: 4000
+                            });
+                        } else {
+                            // Show success toast
+                            toast.success(`Processed ${annotation.type} annotation successfully`, {
+                                duration: 2000
+                            });
+                        }
+                    } catch (apiError) {
+                        // Handle API errors gracefully with a fallback response
+                        console.error(`API error processing ${annotation.type} annotation:`, apiError);
+                        
+                        // Create fallback result based on annotation type
+                        let fallbackResult = null;
+                        
+                        if (annotation.type === 'diagram') {
+                            fallbackResult = {
+                                diag_heading: "Diagram Annotation",
+                                diag_description: "Unable to process diagram due to server error.",
+                                annotations: [
+                                    {marking: "Error", description: "Server error occurred during processing"}
+                                ]
+                            };
+                        } else if (annotation.type === 'text') {
+                            fallbackResult = [{
+                                text_lines: [{
+                                    text: "Unable to process text due to server error.",
+                                    confidence: 1.0,
+                                    bbox: annotation.bbox,
+                                    polygon: [[annotation.bbox[0], annotation.bbox[1]], 
+                                            [annotation.bbox[2], annotation.bbox[1]],
+                                            [annotation.bbox[2], annotation.bbox[3]], 
+                                            [annotation.bbox[0], annotation.bbox[3]]]
+                                }],
+                                languages: ["en"],
+                                image_bbox: [0, 0, 1000, 1000]
+                            }];
+                        } else {
+                            fallbackResult = ["<table><tr><td>Error processing table</td></tr></table>"];
+                        }
+                        
+                        // Update state with fallback result
+                        setProcessingState(prev => {
+                            const pageAnnotations = [...(prev.annotations[prev.currentPage] || [])];
+                            const index = pageAnnotations.findIndex(a => a.id === annotation.id);
+                            if (index !== -1) {
+                                pageAnnotations[index] = {
+                                    ...pageAnnotations[index],
+                                    processed: true,
+                                    result: fallbackResult,
+                                    hasError: true
+                                };
+                            }
+                            return {
+                                ...prev,
+                                annotations: {
+                                    ...prev.annotations,
+                                    [prev.currentPage]: pageAnnotations
+                                }
+                            };
+                        });
+                        
+                        toast.error(`Server error processing ${annotation.type} annotation`, {
+                            duration: 4000
+                        });
+                    }
+                } catch (annotationError: any) {
+                    console.error(`Error processing ${annotation.type} annotation:`, annotationError);
+                    
+                    let errorMessage = `Failed to process ${annotation.type} annotation`;
+                    if (annotationError.response) {
+                        // Server returned an error response
+                        if (annotationError.response.status === 422) {
+                            errorMessage = `Data validation error for ${annotation.type} annotation. Check server logs.`;
+                        } else {
+                            errorMessage = annotationError.response.data?.detail || errorMessage;
+                        }
+                    } else if (annotationError.request) {
+                        // Request was made but no response received (timeout, etc.)
+                        errorMessage = `No response received while processing ${annotation.type} annotation. Server may be busy.`;
+                    } else {
+                        // Error in setting up the request
+                        errorMessage = annotationError.message || 'Unknown error';
+                    }
+                    
+                    toast.error(errorMessage);
+                    
+                    // Mark as processed with error to avoid repeated attempts
+                    setProcessingState(prev => {
+                        const pageAnnotations = [...(prev.annotations[prev.currentPage] || [])];
+                        const index = pageAnnotations.findIndex(a => a.id === annotation.id);
+                        if (index !== -1) {
+                            pageAnnotations[index] = {
+                                ...pageAnnotations[index],
+                                processed: true,
+                                result: { error: errorMessage },
+                                hasError: true
+                            };
+                        }
+                        return {
+                            ...prev,
+                            annotations: {
+                                ...prev.annotations,
+                                [prev.currentPage]: pageAnnotations
+                            }
+                        };
+                    });
+                }
+            }
+
+            setProcessingState(prev => ({
+                ...prev,
+                isProcessing: false
+            }));
+            
+            // Dismiss the loading toast
+            toast.dismiss('annotations-processing');
+            toast.success('All annotations processed');
+        } catch (error: any) {
+            console.error('Error processing annotations:', error);
+            setProcessingState(prev => ({
+                ...prev,
+                isProcessing: false
+            }));
+            
+            // Dismiss the loading toast
+            toast.dismiss('annotations-processing');
+            
+            let errorMessage = 'Failed to process annotations. Please try again.';
+            if (error.response) {
+                errorMessage = error.response.data.detail || errorMessage;
+            }
+            
+            toast.error(errorMessage);
+        }
+    };
+
+    // Helper function to crop an image based on bbox coordinates
+    const getCroppedImageData = (imageUrl: string, bbox: [number, number, number, number]): Promise<string> => {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            // Since we're working with base64 data URLs from our own backend, 
+            // we don't need crossOrigin but we'll keep it for future-proofing
+            img.crossOrigin = 'anonymous';
+            
+            img.onload = () => {
+                try {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    if (!ctx) {
+                        reject(new Error('Could not get canvas context'));
+                        return;
+                    }
+
+                    // Calculate the crop dimensions
+                    const [x1, y1, x2, y2] = bbox;
+                    const width = x2 - x1;
+                    const height = y2 - y1;
+
+                    // Set canvas dimensions
+                    canvas.width = width;
+                    canvas.height = height;
+
+                    // Draw the cropped image
+                    ctx.drawImage(img, x1, y1, width, height, 0, 0, width, height);
+                    
+                    try {
+                        // Get the base64 data URL
+                        const dataUrl = canvas.toDataURL('image/png');
+                        resolve(dataUrl);
+                    } catch (canvasError) {
+                        // This happens when the canvas is tainted due to cross-origin issues
+                        console.error('Canvas tainted by cross-origin data:', canvasError);
+                        reject(new Error('Cannot extract image data due to cross-origin restrictions'));
+                    }
+                } catch (error) {
+                    console.error('Error processing image in canvas:', error);
+                    reject(error);
+                }
+            };
+            
+            img.onerror = (e) => {
+                console.error('Image loading error:', e);
+                reject(new Error('Failed to load image for cropping'));
+            };
+            
+            // Add timeout to prevent hanging on image load
+            setTimeout(() => {
+                if (!img.complete) {
+                    reject(new Error('Image loading timed out'));
+                }
+            }, 30000); // 30 second timeout
+            
+            img.src = imageUrl;
+        });
+    };
 
     return (
         <main className="min-h-screen bg-gray-50">
@@ -313,7 +826,11 @@ export default function Home() {
                                     processedPages: [],
                                     results: {},
                                     pageImages: {},
-                                    selectedBox: undefined
+                                    selectedBox: undefined,
+                                    annotationMode: false,
+                                    annotations: {},
+                                    currentAnnotationType: AnnotationType.TEXT,
+                                    isDrawing: false
                                 });
                                 setPdfInfo(undefined);
                             }}
@@ -344,6 +861,19 @@ export default function Home() {
                                         ocrResults={processingState.results[processingState.currentPage] || []}
                                         onBoxClick={handleBoxClick}
                                         selectedBox={processingState.selectedBox}
+                                        
+                                        // Annotation props
+                                        annotationMode={processingState.annotationMode}
+                                        currentAnnotationType={processingState.currentAnnotationType}
+                                        annotations={processingState.annotations[processingState.currentPage] || []}
+                                        onAnnotationModeToggle={handleAnnotationModeToggle}
+                                        onAnnotationTypeChange={handleAnnotationTypeChange}
+                                        onCreateAnnotation={handleCreateAnnotation}
+                                        onUpdateAnnotation={handleUpdateAnnotation}
+                                        onDeleteAnnotation={handleDeleteAnnotation}
+                                        onSelectAnnotation={handleSelectAnnotation}
+                                        onDetectTables={handleDetectTables}
+                                        onProcessAnnotations={handleProcessAnnotations}
                                     />
                                 ) : (
                                     <div className="flex items-center justify-center h-full text-gray-500">
@@ -362,13 +892,10 @@ export default function Home() {
                                 )}
                             </div>
 
-                            {/* Text Results - Right Side */}
+                            {/* Extracted Content - Right Side */}
                             <div className="w-1/3 bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
-                                <TextSidebar
-                                    ocrResults={processingState.results[processingState.currentPage] || []}
-                                    onTextClick={handleBoxClick}
-                                    onTextEdit={handleTextEdit}
-                                    selectedText={processingState.selectedBox}
+                                <ContentTabs
+                                    annotations={processingState.annotations[processingState.currentPage] || []}
                                 />
                             </div>
                         </div>
