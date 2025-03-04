@@ -41,22 +41,18 @@ const TextSidebar = ({ ocrResults, onTextClick, selectedText, onTextEdit }: Text
         {/* Confidence level legend */}
         <div className="mt-2 mb-3 p-2 bg-gray-50 rounded border border-gray-200">
           <p className="text-xs font-medium text-gray-700 mb-1.5">Confidence Level Legend:</p>
-          <div className="grid grid-cols-2 gap-x-2 gap-y-1">
+          <div className="grid grid-cols-3 gap-x-2 gap-y-1">
             <div className="flex items-center text-xs">
               <span className="w-2 h-2 rounded-full bg-green-500 mr-1"></span>
-              <span className="text-green-800">High (75-100%)</span>
+              <span className="text-green-800">High (65-100%)</span>
             </div>
             <div className="flex items-center text-xs">
               <span className="w-2 h-2 rounded-full bg-blue-500 mr-1"></span>
-              <span className="text-blue-800">Medium (60-74%)</span>
-            </div>
-            <div className="flex items-center text-xs">
-              <span className="w-2 h-2 rounded-full bg-orange-500 mr-1"></span>
-              <span className="text-orange-800">Low (35-59%)</span>
+              <span className="text-blue-800">Moderate (40-64%)</span>
             </div>
             <div className="flex items-center text-xs">
               <span className="w-2 h-2 rounded-full bg-red-500 mr-1"></span>
-              <span className="text-red-800">Very Low (&lt;35%)</span>
+              <span className="text-red-800">Low (&lt;40%)</span>
             </div>
           </div>
         </div>
@@ -139,22 +135,18 @@ const TextSidebar = ({ ocrResults, onTextClick, selectedText, onTextEdit }: Text
                 const confidence = selectedText.confidence * 100;
                 let bgColor, textColor, label;
                 
-                if (confidence >= 75) {
+                if (confidence >= 65) {
                   bgColor = 'bg-green-100';
                   textColor = 'text-green-800';
                   label = 'High';
-                } else if (confidence >= 60) {
+                } else if (confidence >= 40) {
                   bgColor = 'bg-blue-100';
                   textColor = 'text-blue-800';
-                  label = 'Medium';
-                } else if (confidence >= 35) {
-                  bgColor = 'bg-orange-100';
-                  textColor = 'text-orange-800';
-                  label = 'Low';
+                  label = 'Moderate';
                 } else {
                   bgColor = 'bg-red-100';
                   textColor = 'text-red-800';
-                  label = 'Very Low';
+                  label = 'Low';
                 }
                 
                 return (
@@ -199,22 +191,18 @@ const TextSidebar = ({ ocrResults, onTextClick, selectedText, onTextEdit }: Text
                   const confidence = line.confidence * 100;
                   let bgColor, textColor, label;
                   
-                  if (confidence >= 75) {
+                  if (confidence >= 65) {
                     bgColor = 'bg-green-100';
                     textColor = 'text-green-800';
                     label = 'High';
-                  } else if (confidence >= 60) {
+                  } else if (confidence >= 40) {
                     bgColor = 'bg-blue-100';
                     textColor = 'text-blue-800';
-                    label = 'Medium';
-                  } else if (confidence >= 35) {
-                    bgColor = 'bg-orange-100';
-                    textColor = 'text-orange-800';
-                    label = 'Low';
+                    label = 'Moderate';
                   } else {
                     bgColor = 'bg-red-100';
                     textColor = 'text-red-800';
-                    label = 'Very Low';
+                    label = 'Low';
                   }
                   
                   return (
