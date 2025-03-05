@@ -11,6 +11,10 @@ interface AnnotationControlsProps {
   onDetectTables?: () => void;
   onProcessAnnotations?: () => void;
   annotationsCount: number;
+  rotation?: number;
+  onRotateLeft?: () => void;
+  onRotateRight?: () => void;
+  onResetRotation?: () => void;
 }
 
 export default function AnnotationControls({
@@ -20,11 +24,16 @@ export default function AnnotationControls({
   onAnnotationTypeChange,
   onDetectTables,
   onProcessAnnotations,
-  annotationsCount
+  annotationsCount,
+  rotation = 0,
+  onRotateLeft,
+  onRotateRight,
+  onResetRotation
 }: AnnotationControlsProps) {
   return (
     <div className="bg-white p-2 border-b flex items-center justify-between">
       <div className="flex items-center space-x-3">
+        {/* Mode toggle */}
         <button
           onClick={onToggleAnnotationMode}
           className={`px-3 py-1.5 rounded text-sm font-medium transition ${
@@ -36,9 +45,52 @@ export default function AnnotationControls({
           {annotationMode ? 'Drawing Mode' : 'View Mode'}
         </button>
 
+        {/* Rotation Controls */}
+        <div className="flex items-center space-x-1 border-l pl-3 ml-1">
+          <span className="text-xs text-gray-500">Rotation:</span>
+          <div className="flex gap-1 items-center">
+            <button 
+              onClick={onRotateLeft}
+              className="p-1 rounded hover:bg-gray-100 text-gray-700"
+              title="Rotate Left 90°"
+              disabled={!onRotateLeft}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+              </svg>
+            </button>
+            
+            <span className="text-xs font-medium">{rotation || 0}°</span>
+            
+            <button 
+              onClick={onRotateRight}
+              className="p-1 rounded hover:bg-gray-100 text-gray-700"
+              title="Rotate Right 90°"
+              disabled={!onRotateRight}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+              </svg>
+            </button>
+            
+            {rotation !== 0 && onResetRotation && (
+              <button 
+                onClick={onResetRotation}
+                className="p-1 rounded hover:bg-gray-100 text-gray-700"
+                title="Reset Rotation"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Annotation Type Selection */}
         {annotationMode && (
-          <div className="flex items-center space-x-2 border-l pl-3 ml-2">
-            <span className="text-sm text-gray-500">Select type:</span>
+          <div className="flex items-center space-x-2 border-l pl-3 ml-1">
+            <span className="text-xs text-gray-500">Type:</span>
             <div className="flex gap-1">
               <button
                 onClick={() => onAnnotationTypeChange(AnnotationType.TEXT)}
@@ -77,10 +129,11 @@ export default function AnnotationControls({
           </div>
         )}
 
+        {/* Auto-detect Tables button */}
         {annotationMode && onDetectTables && (
           <button
             onClick={onDetectTables}
-            className="px-2 py-1 ml-2 rounded text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 transition"
+            className="px-2 py-1 ml-1 rounded text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 transition"
             title="Automatically detect tables"
           >
             Auto-detect Tables

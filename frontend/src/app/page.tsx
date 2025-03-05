@@ -49,6 +49,7 @@ export default function Home() {
         annotations: {},
         currentAnnotationType: AnnotationType.TEXT,
         isDrawing: false,
+        pageRotations: {} as Record<number, number>,
     });
 
     const handlePDFSelect = async (file: File) => {
@@ -88,7 +89,8 @@ export default function Home() {
                 annotationMode: false,
                 annotations: {},
                 currentAnnotationType: AnnotationType.TEXT,
-                isDrawing: false
+                isDrawing: false,
+                pageRotations: {}
             });
         } catch (error: any) {
             console.error('Error getting PDF info:', error);
@@ -236,6 +238,9 @@ export default function Home() {
             ...prev,
             currentPage: page,
             selectedBox: undefined, // Clear selection when changing pages
+            selectedAnnotationId: undefined, // Clear selected annotation
+            // Use the stored rotation for this page, or default to 0
+            rotation: prev.pageRotations?.[page] || 0
         }));
 
         // Fetch page image if not already cached
@@ -249,6 +254,21 @@ export default function Home() {
             ...prev,
             selectedBox: textLine
         }));
+    };
+    
+    const handlePageRotation = (rotation: number) => {
+        // Update the rotation for the current page
+        setProcessingState(prev => {
+            const updatedRotations = {
+                ...(prev.pageRotations || {}),
+                [prev.currentPage]: rotation
+            };
+            
+            return {
+                ...prev,
+                pageRotations: updatedRotations
+            };
+        });
     };
     
     const handleTextEdit = async (textLine: OCRTextLine, newText: string) => {
@@ -315,7 +335,9 @@ export default function Home() {
     const handleAnnotationModeToggle = () => {
         setProcessingState(prev => ({
             ...prev,
-            annotationMode: !prev.annotationMode
+            annotationMode: !prev.annotationMode,
+            // Ensure rotation is preserved when toggling annotation mode
+            rotation: prev.pageRotations?.[prev.currentPage] || 0
         }));
     };
 
@@ -516,7 +538,8 @@ export default function Home() {
                         id: annotation.id,
                         type: annotation.type,
                         bbox: annotation.bbox.map(n => Math.round(n)), // Convert to integers
-                        image_data: croppedImageData
+                        image_data: croppedImageData,
+                        rotation: processingState.pageRotations?.[processingState.currentPage] || 0
                     };
                     
                     console.log(`Sending ${annotation.type} annotation to server...`);
@@ -751,16 +774,47 @@ export default function Home() {
                     const [x1, y1, x2, y2] = bbox;
                     const width = x2 - x1;
                     const height = y2 - y1;
+                    
+                    // Get the current page rotation (0, 90, 180, 270)
+                    const currentRotation = processingState.pageRotations?.[processingState.currentPage] || 0;
 
-                    // Set canvas dimensions
-                    canvas.width = width;
-                    canvas.height = height;
+                    // Set canvas dimensions based on rotation
+                    if (currentRotation === 90 || currentRotation === 270) {
+                        // Swap width and height for 90 or 270 degree rotations
+                        canvas.width = height;
+                        canvas.height = width;
+                    } else {
+                        canvas.width = width;
+                        canvas.height = height;
+                    }
 
-                    // Draw the cropped image
-                    ctx.drawImage(img, x1, y1, width, height, 0, 0, width, height);
+                    // Apply rotation transformation
+                    ctx.save();
+                    
+                    if (currentRotation !== 0) {
+                        // Translate to center of canvas
+                        ctx.translate(canvas.width/2, canvas.height/2);
+                        
+                        // Rotate canvas
+                        ctx.rotate((currentRotation * Math.PI) / 180);
+                        
+                        // Draw based on rotation
+                        if (currentRotation === 90) {
+                            ctx.drawImage(img, x1, y1, width, height, -height/2, -width/2, height, width);
+                        } else if (currentRotation === 180) {
+                            ctx.drawImage(img, x1, y1, width, height, -width/2, -height/2, width, height);
+                        } else if (currentRotation === 270) {
+                            ctx.drawImage(img, x1, y1, width, height, -height/2, -width/2, height, width);
+                        }
+                    } else {
+                        // No rotation, draw normally
+                        ctx.drawImage(img, x1, y1, width, height, 0, 0, width, height);
+                    }
+                    
+                    ctx.restore();
                     
                     try {
-                        // Get the base64 data URL
+                        // Get the base64 data URL - this has the rotated image
                         const dataUrl = canvas.toDataURL('image/png');
                         resolve(dataUrl);
                     } catch (canvasError) {
@@ -874,6 +928,10 @@ export default function Home() {
                                         onSelectAnnotation={handleSelectAnnotation}
                                         onDetectTables={handleDetectTables}
                                         onProcessAnnotations={handleProcessAnnotations}
+                                        
+                                        // Rotation props
+                                        rotation={processingState.pageRotations?.[processingState.currentPage] || 0}
+                                        onRotationChange={handlePageRotation}
                                     />
                                 ) : (
                                     <div className="flex items-center justify-center h-full text-gray-500">

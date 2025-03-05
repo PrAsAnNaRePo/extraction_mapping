@@ -34,6 +34,7 @@ class AnnotationData(BaseModel):
     type: str 
     bbox: List[Any]  # Allow any type of number (float or int)
     image_data: str  # Base64 encoded cropped image
+    rotation: Optional[int] = 0  # Image rotation (0, 90, 180, 270 degrees)
     
     model_config = {
         "extra": "allow",  # Don't reject requests with extra fields
@@ -399,7 +400,8 @@ async def process_annotation(request: Request):
             'id': raw_data.get('id', ''),
             'type': raw_data.get('type', ''),
             'bbox': raw_data.get('bbox', [0, 0, 100, 100]),
-            'image_data': raw_data.get('image_data', '')
+            'image_data': raw_data.get('image_data', ''),
+            'rotation': raw_data.get('rotation', 0)
         })
     except Exception as e:
         print(f"Error parsing request data: {e}")
@@ -414,6 +416,7 @@ async def process_annotation(request: Request):
         }
     print(f"======= STARTING ANNOTATION PROCESSING: TYPE={annotation.type}, ID={annotation.id} =======")
     print(f"Annotation bbox: {annotation.bbox}")
+    print(f"Annotation rotation: {annotation.rotation} degrees")
     print(f"Image data length: {len(annotation.image_data) if annotation.image_data else 'None'}")
     print(f"Image data type: {type(annotation.image_data)}")
     if annotation.image_data and len(annotation.image_data) > 50:
@@ -447,13 +450,31 @@ async def process_annotation(request: Request):
                 image = Image.open(io.BytesIO(image_data))
                 print(f"Successfully opened image: {image.format}, {image.size}, {image.mode}")
                 
-                # Save a debug image to inspect what's being sent
+                # Save the original image for debugging
                 debug_dir = os.path.join(os.path.dirname(__file__), "debug_images")
                 os.makedirs(debug_dir, exist_ok=True)
                 
-                debug_path = os.path.join(debug_dir, f"debug_{annotation.type}_{annotation.id[:8]}.png")
+                debug_path = os.path.join(debug_dir, f"debug_{annotation.type}_{annotation.id[:8]}_orig.png")
                 image.save(debug_path)
-                print(f"Saved debug image to {debug_path}")
+                print(f"Saved original debug image to {debug_path}")
+                
+                # Apply rotation if needed - this should make sure the image is in correct orientation 
+                # before processing, regardless of the rotation in the frontend
+                if hasattr(annotation, 'rotation') and annotation.rotation != 0:
+                    # Apply counter-rotation to normalize the image
+                    # If frontend rotated 90° clockwise, we rotate 90° counter-clockwise here
+                    counter_rotation = (360 - annotation.rotation) % 360
+                    print(f"Applying counter-rotation of {counter_rotation}° to normalize image")
+                    
+                    # Rotate the image 
+                    # This ensures the image is in the expected orientation for processing
+                    # expand=True ensures we don't lose any part of the image
+                    image = image.rotate(counter_rotation, expand=True)
+                    
+                    # Save the rotated image for debugging
+                    rotated_debug_path = os.path.join(debug_dir, f"debug_{annotation.type}_{annotation.id[:8]}_rotated.png")
+                    image.save(rotated_debug_path)
+                    print(f"Saved rotated debug image to {rotated_debug_path}")
             except Exception as decode_error:
                 print(f"ERROR decoding base64 or opening image: {str(decode_error)}")
                 import traceback
@@ -486,40 +507,10 @@ async def process_annotation(request: Request):
         if annotation.type == "text":
             print("=== PROCESSING TEXT ANNOTATION ===")
             try:
-                # First, check if the text might be in a tilted orientation
-                # This helps extract text that's rotated in diagrams/tables
-                print("Checking if the text is in a tilted orientation...")
-                try:
-                    if table_detector:
-                        detection_result = table_detector.detect_bbox(image)
-                        print(f"Table detector found {len(detection_result['bbox_data'])} objects")
-                        
-                        # Check if any detected objects are tilted (class_id = 1)
-                        is_tilted = False
-                        for bbox_data in detection_result["bbox_data"]:
-                            if bbox_data.get("class_id") == 1:  # Tilted content
-                                print("Detected tilted content. Will rotate text 270 degrees counter-clockwise.")
-                                is_tilted = True
-                                break
-                                
-                        # Rotate the image if needed
-                        if is_tilted:
-                            print("Rotating image 270 degrees counter-clockwise for text detection")
-                            # Rotate 270 degrees counter-clockwise
-                            image = image.rotate(270, expand=True)
-                            print(f"Image rotated for text extraction. New dimensions: {image.size}")
-                            
-                            # Save the rotated image for debugging
-                            debug_dir = os.path.join(os.path.dirname(__file__), "debug_images")
-                            os.makedirs(debug_dir, exist_ok=True)
-                            rotated_debug_path = os.path.join(debug_dir, f"rotated_text_{annotation.id[:8]}.png")
-                            image.save(rotated_debug_path)
-                            print(f"Saved rotated text image to {rotated_debug_path}")
-                    else:
-                        print("Table detector not available, skipping tilt detection for text")
-                except Exception as detect_error:
-                    print(f"Error during tilt detection for text: {str(detect_error)}")
-                    # Continue with original image if detection fails
+                # The image should already be correctly rotated at this point
+                print("Processing text annotation with normalized orientation")
+                
+                # No need for additional image saving here since we already saved debug images
                 
                 # Process with Surya OCR
                 print("Calling Surya OCR predictor...")
@@ -625,39 +616,10 @@ async def process_annotation(request: Request):
         elif annotation.type == "table":
             print("=== PROCESSING TABLE ANNOTATION ===")
             try:
-                # First, check if the table is tilted
-                print("Checking if the table is tilted...")
-                try:
-                    if table_detector:
-                        detection_result = table_detector.detect_bbox(image)
-                        print(f"Table detector found {len(detection_result['bbox_data'])} objects")
-                        
-                        # Check if any detected objects are tilted (class_id = 1)
-                        is_tilted = False
-                        for bbox_data in detection_result["bbox_data"]:
-                            if bbox_data.get("class_id") == 1:  # Tilted table
-                                print("Detected tilted table. Will rotate 270 degrees counter-clockwise.")
-                                is_tilted = True
-                                break
-                                
-                        # Rotate the image if needed
-                        if is_tilted:
-                            print("Rotating table image 270 degrees counter-clockwise")
-                            # Rotate 270 degrees counter-clockwise
-                            image = image.rotate(270, expand=True)
-                            print(f"Table image rotated. New dimensions: {image.size}")
-                            
-                            # Save the rotated image for debugging
-                            debug_dir = os.path.join(os.path.dirname(__file__), "debug_images")
-                            os.makedirs(debug_dir, exist_ok=True)
-                            rotated_debug_path = os.path.join(debug_dir, f"rotated_table_{annotation.id[:8]}.png")
-                            image.save(rotated_debug_path)
-                            print(f"Saved rotated table image to {rotated_debug_path}")
-                    else:
-                        print("Table detector not available, skipping tilt detection for table")
-                except Exception as detect_error:
-                    print(f"Error during tilt detection for table: {str(detect_error)}")
-                    # Continue with original image if detection fails
+                # The image should already be correctly rotated at this point
+                print("Processing table annotation with normalized orientation")
+                
+                # No need for additional image saving here since we already saved debug images
                 
                 # Convert PIL image to base64
                 buffer = io.BytesIO()
@@ -728,33 +690,10 @@ async def process_annotation(request: Request):
         elif annotation.type == "diagram":
             print("=== PROCESSING DIAGRAM ANNOTATION ===")
             try:
-                # First, check if this might be a tilted table/diagram using the table detector
-                # This will help us handle rotated diagrams properly
-                print("Checking if the diagram is tilted using TableDetector...")
-                try:
-                    if table_detector:
-                        detection_result = table_detector.detect_bbox(image)
-                        print(f"Table detector found {len(detection_result['bbox_data'])} objects")
-                        
-                        # Check if any detected objects are tilted (class_id = 1)
-                        is_tilted = False
-                        for bbox_data in detection_result["bbox_data"]:
-                            if bbox_data.get("class_id") == 1:  # Tilted table/diagram
-                                print("Detected a tilted diagram/table. Will rotate 270 degrees counter-clockwise.")
-                                is_tilted = True
-                                break
-                                
-                        # Rotate the image if needed
-                        if is_tilted:
-                            print("Rotating image 270 degrees counter-clockwise to normalize orientation")
-                            # Rotate 270 degrees counter-clockwise (same as 90 clockwise)
-                            image = image.rotate(270, expand=True)
-                            print(f"Image rotated. New dimensions: {image.size}")
-                    else:
-                        print("Table detector not available, skipping tilt detection")
-                except Exception as detect_error:
-                    print(f"Error during tilt detection: {str(detect_error)}")
-                    # Continue with original image if detection fails
+                # The image should already be correctly rotated at this point
+                print("Processing diagram annotation with normalized orientation")
+                
+                # No need for additional image saving here since we already saved debug images
                 
                 # Convert PIL image to base64 for the diagram extractor
                 buffer = io.BytesIO()

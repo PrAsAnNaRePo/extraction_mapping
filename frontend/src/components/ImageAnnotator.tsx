@@ -23,6 +23,10 @@ interface ImageAnnotatorProps {
   onSelectAnnotation?: (id: string) => void;
   onDetectTables?: () => void;
   onProcessAnnotations?: () => void;
+  
+  // Rotation props
+  rotation?: number;
+  onRotationChange?: (rotation: number) => void;
 }
 
 export default function ImageAnnotator({ 
@@ -41,7 +45,9 @@ export default function ImageAnnotator({
   onDeleteAnnotation,
   onSelectAnnotation,
   onDetectTables,
-  onProcessAnnotations
+  onProcessAnnotations,
+  rotation = 0,
+  onRotationChange
 }: ImageAnnotatorProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -50,6 +56,7 @@ export default function ImageAnnotator({
   const [hoveredBox, setHoveredBox] = useState<OCRTextLine | null>(null);
   const [error, setError] = useState<string>();
   const [zoomLevel, setZoomLevel] = useState(1);
+  const [localRotation, setLocalRotation] = useState(rotation); // Internal rotation state
   
   // Annotation related states
   const [isDrawing, setIsDrawing] = useState(false);
@@ -143,13 +150,22 @@ export default function ImageAnnotator({
     console.log(`Container dimensions: ${containerWidth}x${containerHeight}`);
     console.log(`Image dimensions: ${image.width}x${image.height}`);
     
+    // Get the current rotation value (from either prop or local state)
+    const activeRotation = onRotationChange ? rotation : localRotation;
+    console.log(`Current rotation: ${activeRotation} degrees`);
+    
+    // Determine dimensions based on rotation
+    const isRotated90or270 = activeRotation === 90 || activeRotation === 270;
+    const imageWidth = isRotated90or270 ? image.height : image.width;
+    const imageHeight = isRotated90or270 ? image.width : image.height;
+    
     // For higher quality, we'll use more of the container but still leave some padding
     const maxWidth = containerWidth * 0.98;  // Use 98% of container width
     const maxHeight = containerHeight * 0.98; // Use 98% of container height
     
     // Calculate scaling factors with higher precision
-    const scaleX = maxWidth / image.width;
-    const scaleY = maxHeight / image.height;
+    const scaleX = maxWidth / imageWidth;
+    const scaleY = maxHeight / imageHeight;
     
     // Use the smaller scale to ensure image fits completely with proper aspect ratio
     const newScale = Math.min(scaleX, scaleY);
@@ -162,12 +178,13 @@ export default function ImageAnnotator({
     setScale(limitedScale);
     
     // Set canvas size based on the calculated scale to maintain aspect ratio
-    canvas.width = image.width * newScale;
-    canvas.height = image.height * newScale;
+    canvas.width = imageWidth * newScale;
+    canvas.height = imageHeight * newScale;
     
     // Track the actual canvas dimensions for calculating relative coordinates
     canvas.dataset.actualWidth = String(canvas.width);
     canvas.dataset.actualHeight = String(canvas.height);
+    canvas.dataset.rotation = String(activeRotation);
 
     // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -183,8 +200,23 @@ export default function ImageAnnotator({
     // Increase contrast, clarity and sharpen edges while maintaining natural colors
     ctx.filter = 'contrast(1.2) saturate(1.1) brightness(1.02)';
     
-    // Draw image with high-quality settings
-    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    // Apply rotation to canvas
+    ctx.save();
+    ctx.translate(canvas.width/2, canvas.height/2);
+    ctx.rotate((activeRotation * Math.PI) / 180);
+    
+    // Draw the image with correct offset based on rotation
+    if (activeRotation === 0) {
+      ctx.drawImage(image, -canvas.width/2, -canvas.height/2, canvas.width, canvas.height);
+    } else if (activeRotation === 90) {
+      ctx.drawImage(image, -canvas.height/2, -canvas.width/2, canvas.height, canvas.width);
+    } else if (activeRotation === 180) {
+      ctx.drawImage(image, -canvas.width/2, -canvas.height/2, canvas.width, canvas.height);
+    } else if (activeRotation === 270) {
+      ctx.drawImage(image, -canvas.height/2, -canvas.width/2, canvas.height, canvas.width);
+    }
+    
+    ctx.restore();
     
     // Reset filter for other rendering operations
     ctx.filter = 'none';
@@ -207,8 +239,17 @@ export default function ImageAnnotator({
     
     // Calculate scale factors between OCR coordinates and canvas dimensions
     // This ensures the bounding boxes match the displayed image dimensions
-    const xScaleFactor = ocrImageWidth > 0 ? (canvas.width / ocrImageWidth) : newScale;
-    const yScaleFactor = ocrImageHeight > 0 ? (canvas.height / ocrImageHeight) : newScale;
+    let xScaleFactor, yScaleFactor;
+    
+    if (activeRotation === 90 || activeRotation === 270) {
+      // For 90° and 270° rotations, width and height are swapped
+      xScaleFactor = ocrImageWidth > 0 ? (canvas.height / ocrImageWidth) : newScale;
+      yScaleFactor = ocrImageHeight > 0 ? (canvas.width / ocrImageHeight) : newScale;
+    } else {
+      // For 0° and 180° rotations, normal scaling
+      xScaleFactor = ocrImageWidth > 0 ? (canvas.width / ocrImageWidth) : newScale;
+      yScaleFactor = ocrImageHeight > 0 ? (canvas.height / ocrImageHeight) : newScale;
+    }
 
     // Store scale factors as data attributes for use by mouse interaction functions
     canvas.dataset.xScale = String(xScaleFactor);
@@ -220,10 +261,33 @@ export default function ImageAnnotator({
         const [x, y, x2, y2] = line.bbox;
         
         // Scale bbox coordinates to match the canvas dimensions
-        const scaledX = x * xScaleFactor;
-        const scaledY = y * yScaleFactor;
-        const scaledWidth = (x2 - x) * xScaleFactor;
-        const scaledHeight = (y2 - y) * yScaleFactor;
+        let scaledX, scaledY, scaledWidth, scaledHeight;
+
+        if (activeRotation === 0) {
+          // Normal orientation
+          scaledX = x * xScaleFactor;
+          scaledY = y * yScaleFactor;
+          scaledWidth = (x2 - x) * xScaleFactor;
+          scaledHeight = (y2 - y) * yScaleFactor;
+        } else if (activeRotation === 90) {
+          // 90 degree rotation - swap coordinates and adjust for rotation
+          scaledX = canvas.width - (y + (y2 - y)) * yScaleFactor;
+          scaledY = x * xScaleFactor;
+          scaledWidth = (y2 - y) * yScaleFactor;
+          scaledHeight = (x2 - x) * xScaleFactor;
+        } else if (activeRotation === 180) {
+          // 180 degree rotation - invert coordinates
+          scaledX = canvas.width - (x + (x2 - x)) * xScaleFactor;
+          scaledY = canvas.height - (y + (y2 - y)) * yScaleFactor;
+          scaledWidth = (x2 - x) * xScaleFactor;
+          scaledHeight = (y2 - y) * yScaleFactor;
+        } else if (activeRotation === 270) {
+          // 270 degree rotation - swap coordinates and adjust for rotation
+          scaledX = y * yScaleFactor;
+          scaledY = canvas.height - (x + (x2 - x)) * xScaleFactor;
+          scaledWidth = (y2 - y) * yScaleFactor;
+          scaledHeight = (x2 - x) * xScaleFactor;
+        }
 
         // Set colors and opacity based on state
         if (line === selectedBox) {
@@ -252,10 +316,33 @@ export default function ImageAnnotator({
         const [x, y, x2, y2] = annotation.bbox;
         
         // Scale bbox coordinates to match the canvas dimensions
-        const scaledX = x * xScaleFactor;
-        const scaledY = y * yScaleFactor;
-        const scaledWidth = (x2 - x) * xScaleFactor;
-        const scaledHeight = (y2 - y) * yScaleFactor;
+        let scaledX, scaledY, scaledWidth, scaledHeight;
+
+        if (activeRotation === 0) {
+          // Normal orientation
+          scaledX = x * xScaleFactor;
+          scaledY = y * yScaleFactor;
+          scaledWidth = (x2 - x) * xScaleFactor;
+          scaledHeight = (y2 - y) * yScaleFactor;
+        } else if (activeRotation === 90) {
+          // 90 degree rotation - swap coordinates and adjust for rotation
+          scaledX = canvas.width - (y + (y2 - y)) * yScaleFactor;
+          scaledY = x * xScaleFactor;
+          scaledWidth = (y2 - y) * yScaleFactor;
+          scaledHeight = (x2 - x) * xScaleFactor;
+        } else if (activeRotation === 180) {
+          // 180 degree rotation - invert coordinates
+          scaledX = canvas.width - (x + (x2 - x)) * xScaleFactor;
+          scaledY = canvas.height - (y + (y2 - y)) * yScaleFactor;
+          scaledWidth = (x2 - x) * xScaleFactor;
+          scaledHeight = (y2 - y) * yScaleFactor;
+        } else if (activeRotation === 270) {
+          // 270 degree rotation - swap coordinates and adjust for rotation
+          scaledX = y * yScaleFactor;
+          scaledY = canvas.height - (x + (x2 - x)) * xScaleFactor;
+          scaledWidth = (y2 - y) * yScaleFactor;
+          scaledHeight = (x2 - x) * xScaleFactor;
+        }
 
         // Check if this annotation is selected
         const isSelected = annotation.id === selectedAnnotation;
@@ -335,15 +422,54 @@ export default function ImageAnnotator({
           // Draw delete button if selected
           const deleteButtonSize = 16;
           ctx.fillStyle = '#ef4444'; // Red background
+          
+          // Get the current rotation value (from either prop or local state)
+          const activeRotation = onRotationChange ? rotation : localRotation;
+          
+          // Position delete button based on rotation
+          let deleteButtonX, deleteButtonY, textX, textY;
+          
+          if (activeRotation === 0) {
+            // Top-right corner for 0 degrees
+            deleteButtonX = scaledX + scaledWidth - deleteButtonSize - 5;
+            deleteButtonY = scaledY + 5;
+            textX = scaledX + scaledWidth - deleteButtonSize + 5;
+            textY = scaledY + 17;
+          } else if (activeRotation === 90) {
+            // Top-left corner for 90 degrees
+            deleteButtonX = scaledX + 5;
+            deleteButtonY = scaledY + 5;
+            textX = scaledX + 5 + 5;
+            textY = scaledY + 17;
+          } else if (activeRotation === 180) {
+            // Bottom-left corner for 180 degrees
+            deleteButtonX = scaledX + 5;
+            deleteButtonY = scaledY + scaledHeight - deleteButtonSize - 5;
+            textX = scaledX + 5 + 5;
+            textY = scaledY + scaledHeight - deleteButtonSize + 7;
+          } else if (activeRotation === 270) {
+            // Bottom-right corner for 270 degrees
+            deleteButtonX = scaledX + scaledWidth - deleteButtonSize - 5;
+            deleteButtonY = scaledY + scaledHeight - deleteButtonSize - 5;
+            textX = scaledX + scaledWidth - deleteButtonSize + 5;
+            textY = scaledY + scaledHeight - deleteButtonSize + 7;
+          } else {
+            // Default fallback for any other rotation
+            deleteButtonX = scaledX + scaledWidth - deleteButtonSize - 5;
+            deleteButtonY = scaledY + 5;
+            textX = scaledX + scaledWidth - deleteButtonSize + 5;
+            textY = scaledY + 17;
+          }
+          
           ctx.beginPath();
-          ctx.rect(scaledX + scaledWidth - deleteButtonSize - 5, scaledY + 5, deleteButtonSize, deleteButtonSize);
+          ctx.rect(deleteButtonX, deleteButtonY, deleteButtonSize, deleteButtonSize);
           ctx.fill();
           ctx.stroke();
           
           // Add an X to the delete button
           ctx.fillStyle = '#ffffff';
           ctx.font = 'bold 12px Arial';
-          ctx.fillText('×', scaledX + scaledWidth - deleteButtonSize, scaledY + 17);
+          ctx.fillText('×', textX, textY);
         }
       });
     }
@@ -355,6 +481,36 @@ export default function ImageAnnotator({
       const y = Math.min(startPoint.y, currentPoint.y);
       const width = Math.abs(currentPoint.x - startPoint.x);
       const height = Math.abs(currentPoint.y - startPoint.y);
+      
+      // Scale and rotate the selection rectangle
+      let scaledX, scaledY, scaledWidth, scaledHeight;
+      
+      // For drawing, we need to apply the same transformations but in reverse
+      if (activeRotation === 0) {
+        // No rotation
+        scaledX = x * xScaleFactor;
+        scaledY = y * yScaleFactor;
+        scaledWidth = width * xScaleFactor;
+        scaledHeight = height * yScaleFactor;
+      } else if (activeRotation === 90) {
+        // 90 degrees
+        scaledX = canvas.width - (y + height) * yScaleFactor;
+        scaledY = x * xScaleFactor;
+        scaledWidth = height * yScaleFactor;
+        scaledHeight = width * xScaleFactor;
+      } else if (activeRotation === 180) {
+        // 180 degrees
+        scaledX = canvas.width - (x + width) * xScaleFactor;
+        scaledY = canvas.height - (y + height) * yScaleFactor;
+        scaledWidth = width * xScaleFactor;
+        scaledHeight = height * yScaleFactor;
+      } else if (activeRotation === 270) {
+        // 270 degrees
+        scaledX = y * yScaleFactor;
+        scaledY = canvas.height - (x + width) * xScaleFactor;
+        scaledWidth = height * yScaleFactor;
+        scaledHeight = width * xScaleFactor;
+      }
       
       // Set the style based on annotation type
       switch (currentAnnotationType) {
@@ -379,8 +535,8 @@ export default function ImageAnnotator({
       ctx.lineWidth = 2;
       
       // Draw the selection rectangle
-      ctx.fillRect(x, y, width, height);
-      ctx.strokeRect(x, y, width, height);
+      ctx.fillRect(scaledX, scaledY, scaledWidth, scaledHeight);
+      ctx.strokeRect(scaledX, scaledY, scaledWidth, scaledHeight);
       ctx.setLineDash([]); // Reset to solid line
     }
   }, [
@@ -397,7 +553,10 @@ export default function ImageAnnotator({
     currentPoint,
     currentAnnotationType,
     selectedAnnotation,
-    resizeHandle
+    resizeHandle,
+    rotation,
+    localRotation,
+    onRotationChange
   ]);
 
   const handleZoomIn = () => {
@@ -410,6 +569,38 @@ export default function ImageAnnotator({
   
   const handleResetZoom = () => {
     setZoomLevel(1);
+  };
+  
+  // Sync localRotation with prop when prop changes
+  useEffect(() => {
+    setLocalRotation(rotation);
+  }, [rotation]);
+
+  // Rotation controls
+  const handleRotateLeft = () => {
+    const newRotation = (rotation - 90 + 360) % 360; // Ensure it stays between 0-359
+    if (onRotationChange) {
+      onRotationChange(newRotation);
+    } else {
+      setLocalRotation(newRotation);
+    }
+  };
+  
+  const handleRotateRight = () => {
+    const newRotation = (rotation + 90) % 360;
+    if (onRotationChange) {
+      onRotationChange(newRotation);
+    } else {
+      setLocalRotation(newRotation);
+    }
+  };
+  
+  const handleResetRotation = () => {
+    if (onRotationChange) {
+      onRotationChange(0);
+    } else {
+      setLocalRotation(0);
+    }
   };
 
   const getMousePosition = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -440,13 +631,42 @@ export default function ImageAnnotator({
     
     const canvasX = unzoomedX * canvasScaleX;
     const canvasY = unzoomedY * canvasScaleY;
+
+    // Step 3: Transform coordinates based on rotation to get original image space coordinates
+    let transformedX = canvasX;
+    let transformedY = canvasY;
     
-    // Step 3: Convert from canvas coordinates to OCR coordinates
+    // Get the current rotation value (from either prop or local state)
+    const activeRotation = onRotationChange ? rotation : localRotation;
+    
+    // Apply coordinate transformation based on rotation angle
+    if (activeRotation === 0) {
+      // No rotation
+      transformedX = canvasX;
+      transformedY = canvasY;
+    } else if (activeRotation === 90) {
+      // 90 degrees clockwise - need to adjust coordinates
+      const tempX = canvasY;
+      const tempY = canvas.width - canvasX;
+      transformedX = tempX;
+      transformedY = tempY;
+    } else if (activeRotation === 180) {
+      // 180 degrees - flip both coordinates
+      transformedX = canvas.width - canvasX;
+      transformedY = canvas.height - canvasY;
+    } else if (activeRotation === 270) {
+      // 270 degrees clockwise - transform coordinates
+      const tempX = canvas.height - canvasY;
+      const tempY = canvasX;
+      transformedX = tempX;
+      transformedY = tempY;
+    }
+    
+    // Step 4: Convert from canvas coordinates to OCR coordinates
     // The bounding boxes are in OCR coordinate space, not canvas space
-    // We need to convert our canvas position to the OCR space
     return {
-      x: canvasX / xScaleFactor,
-      y: canvasY / yScaleFactor
+      x: transformedX / xScaleFactor,
+      y: transformedY / yScaleFactor
     };
   };
 
@@ -539,8 +759,30 @@ export default function ImageAnnotator({
         
         // Check if click is on delete button
         const deleteButtonSize = 16;
-        const deleteButtonX = scaledX + scaledWidth - deleteButtonSize - 5;
-        const deleteButtonY = scaledY + 5;
+        
+        // Get the current rotation value (from either prop or local state)
+        const activeRotation = onRotationChange ? rotation : localRotation;
+        
+        // Position delete button based on rotation
+        let deleteButtonX, deleteButtonY;
+        
+        if (activeRotation === 0) {
+          deleteButtonX = scaledX + scaledWidth - deleteButtonSize - 5;
+          deleteButtonY = scaledY + 5;
+        } else if (activeRotation === 90) {
+          deleteButtonX = scaledX + 5;
+          deleteButtonY = scaledY + 5;
+        } else if (activeRotation === 180) {
+          deleteButtonX = scaledX + 5;
+          deleteButtonY = scaledY + scaledHeight - deleteButtonSize - 5;
+        } else if (activeRotation === 270) {
+          deleteButtonX = scaledX + scaledWidth - deleteButtonSize - 5;
+          deleteButtonY = scaledY + scaledHeight - deleteButtonSize - 5;
+        } else {
+          // Default fallback for any other rotation
+          deleteButtonX = scaledX + scaledWidth - deleteButtonSize - 5;
+          deleteButtonY = scaledY + 5;
+        }
         
         if (
           scaledClickX >= deleteButtonX && 
@@ -835,41 +1077,80 @@ export default function ImageAnnotator({
       {!annotationMode ? (
         <div className="bg-white p-2 border-b flex items-center justify-between">
           <div className="flex items-center space-x-2">
-            <button 
-              onClick={handleZoomOut}
-              className="p-1 rounded hover:bg-gray-100 text-gray-700"
-              title="Zoom Out"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 12H4" />
-              </svg>
-            </button>
+            {/* Zoom Controls */}
+            <div className="flex items-center border-r pr-2 mr-2">
+              <button 
+                onClick={handleZoomOut}
+                className="p-1 rounded hover:bg-gray-100 text-gray-700"
+                title="Zoom Out"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 12H4" />
+                </svg>
+              </button>
+              
+              <span className="text-sm font-medium">{Math.round(zoomLevel * 100)}%</span>
+              
+              <button 
+                onClick={handleZoomIn}
+                className="p-1 rounded hover:bg-gray-100 text-gray-700"
+                title="Zoom In"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+              </button>
+              
+              <button 
+                onClick={handleResetZoom}
+                className="p-1 rounded hover:bg-gray-100 text-gray-700 ml-1"
+                title="Reset Zoom"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </button>
+            </div>
             
-            <span className="text-sm font-medium">{Math.round(zoomLevel * 100)}%</span>
-            
-            <button 
-              onClick={handleZoomIn}
-              className="p-1 rounded hover:bg-gray-100 text-gray-700"
-              title="Zoom In"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
-            </button>
-            
-            <button 
-              onClick={handleResetZoom}
-              className="p-1 rounded hover:bg-gray-100 text-gray-700 ml-2"
-              title="Reset Zoom"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-            </button>
+            {/* Rotation Controls */}
+            <div className="flex items-center border-r pr-2 mr-2">
+              <button 
+                onClick={handleRotateLeft}
+                className="p-1 rounded hover:bg-gray-100 text-gray-700"
+                title="Rotate Left 90°"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                </svg>
+              </button>
+              
+              <span className="text-sm font-medium mx-1">{rotation}°</span>
+              
+              <button 
+                onClick={handleRotateRight}
+                className="p-1 rounded hover:bg-gray-100 text-gray-700"
+                title="Rotate Right 90°"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                </svg>
+              </button>
+              
+              <button 
+                onClick={handleResetRotation}
+                className="p-1 rounded hover:bg-gray-100 text-gray-700 ml-1"
+                title="Reset Rotation"
+                disabled={rotation === 0}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </button>
+            </div>
             
             <button 
               onClick={() => setZoomLevel(prev => Math.min(prev + 0.5, 5))}
-              className="p-1 rounded hover:bg-gray-100 text-gray-700 ml-2"
+              className="p-1 rounded hover:bg-gray-100 text-gray-700"
               title="High Quality Zoom"
             >
               <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -908,6 +1189,10 @@ export default function ImageAnnotator({
           onDetectTables={onDetectTables}
           onProcessAnnotations={onProcessAnnotations}
           annotationsCount={annotations?.length || 0}
+          rotation={rotation}
+          onRotateLeft={handleRotateLeft}
+          onRotateRight={handleRotateRight}
+          onResetRotation={handleResetRotation}
         />
       )}
       

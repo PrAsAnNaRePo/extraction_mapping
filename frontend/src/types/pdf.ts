@@ -58,4 +58,5 @@ export interface PDFProcessingState {
     currentAnnotationType: AnnotationType;
     isDrawing: boolean;
     selectedAnnotationId?: string; // ID of selected annotation for editing
+    pageRotations?: Record<number, number>; // Store rotation for each page (0, 90, 180, 270 degrees)
 }
