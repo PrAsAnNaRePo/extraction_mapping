@@ -18,6 +18,12 @@ A full-stack application for extracting and visualizing text from engineering dr
   - High accuracy text detection and recognition
   - Multi-language support
 
+- 📊 **Table Extraction**:
+  - AI-powered table structure recognition
+  - Accurate cell-by-cell content extraction
+  - Intelligent table title and description generation
+  - Responsive HTML table output with proper formatting
+
 - 🎯 **Interactive Visualization**: 
   - Dynamic bounding box display
   - Hover and click interactions
@@ -25,8 +31,9 @@ A full-stack application for extracting and visualizing text from engineering dr
   - Page-level navigation with tabs
 
 - 📊 **Detailed Information**:
-  - Extracted text content
-  - Confidence scores
+  - Extracted text content with confidence scores
+  - Table titles and descriptions with structured HTML
+  - Diagram annotations with metadata
   - Bounding box coordinates
   - Page-specific results
 
@@ -130,14 +137,18 @@ The frontend application will be available at http://localhost:55630
      - Click a box to select it
      - Selected boxes are highlighted in green
    
-   - **View Extracted Text**:
-     - Text sidebar shows page-specific results
-     - Each text entry displays:
-       - Extracted text content
-       - Confidence score
-       - Coordinates
-     - Click text to highlight corresponding box
-     - Auto-scroll to selected text
+   - **Annotate Content**:
+     - Create text, table, and diagram annotations
+     - Auto-detect tables with AI processing
+     - Resize and position annotations as needed
+     - Process annotations to extract detailed information
+   
+   - **View Extracted Content**:
+     - **Text**: View extracted text with confidence scores
+     - **Tables**: View structured tables with titles and descriptions
+     - **Diagrams**: View diagram annotations with metadata
+     - Click content to highlight corresponding annotations
+     - Auto-scroll to selected items
 
 5. **Navigation and Tools**
    - Switch between pages using tabs
@@ -153,10 +164,13 @@ The frontend application will be available at http://localhost:55630
 - **Framework**: FastAPI
 - **OCR Engine**: surya_ocr
 - **PDF Processing**: PyPDF2, pdf2image
+- **AI Models**: Claude 3.7 Sonnet for table and diagram analysis
 - **Features**:
   - Fast text detection and recognition
   - PDF page extraction and conversion
+  - Intelligent table structure and content extraction
   - Multi-page processing
+  - Diagram analysis with annotations
   - Confidence scoring
   - Bounding box coordinates
   - Multi-language support
@@ -199,7 +213,16 @@ POST /ocr
 - Returns: OCR results for single image
 ```
 
-Example Response (process-pdf):
+```
+POST /process-annotation
+- Accepts: JSON with 'id', 'type', 'bbox', and 'image_data' fields
+- Returns: Processed annotation results based on type (text/table/diagram)
+- For tables: Returns title, description, and HTML table representation
+```
+
+Example Responses:
+
+**process-pdf Response:**
 ```json
 {
   "total_pages": 5,
@@ -218,6 +241,19 @@ Example Response (process-pdf):
       }]
     }
   ]
+}
+```
+
+**process-annotation (Table) Response:**
+```json
+{
+  "success": true,
+  "annotation_id": "table-12345",
+  "result": {
+    "title": "Material Specifications",
+    "description": "A table showing material types and their properties for engineering applications",
+    "html": "<table><thead><tr><th>Material</th><th>Density</th><th>Tensile Strength</th></tr></thead><tbody>...</tbody></table>"
+  }
 }
 ```
 
@@ -300,8 +336,10 @@ For support, please open an issue in the GitHub repository or contact the mainta
 - [x] Multi-page PDF support
 - [x] Page selection and navigation
 - [x] Image caching and optimization
+- [x] Table structure recognition with titles and descriptions
+- [x] Diagram annotation and analysis
 - [ ] Batch processing for multiple PDFs
-- [ ] Export functionality (PDF annotations, CSV)
+- [ ] Export functionality (PDF annotations, CSV, HTML)
 - [ ] Advanced text search and filtering
 - [ ] Document comparison tools
 - [ ] Integration with CAD software
