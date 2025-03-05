@@ -668,24 +668,46 @@ async def process_annotation(request: Request):
                 
                 # Extract table using the TOCRAgent
                 print("Calling table extractor...")
-                html_result, _ = table_extractor.extract_table(base64_string)
-                print(f"Table extraction complete. Got result of type: {type(html_result)}")
+                extracted_result, _ = table_extractor.extract_table(base64_string)
+                print(f"Table extraction complete. Got result of type: {type(extracted_result)}")
                 
                 # Check if we got a valid result
-                if html_result and isinstance(html_result, list) and len(html_result) > 0:
-                    print(f"Successfully extracted table: {len(html_result[0])} chars")
-                    return {
-                        "success": True,
-                        "annotation_id": annotation.id,
-                        "result": html_result
-                    }
+                if extracted_result:
+                    if isinstance(extracted_result, dict) and 'title' in extracted_result and 'description' in extracted_result and 'html' in extracted_result:
+                        # New format with title, description, and HTML
+                        print(f"Successfully extracted table with title: {extracted_result['title']}")
+                        return {
+                            "success": True,
+                            "annotation_id": annotation.id,
+                            "result": extracted_result
+                        }
+                    elif isinstance(extracted_result, list) and len(extracted_result) > 0:
+                        # Legacy format (list of HTML strings)
+                        print(f"Successfully extracted table: {len(extracted_result[0])} chars")
+                        return {
+                            "success": True,
+                            "annotation_id": annotation.id,
+                            "result": extracted_result
+                        }
+                    else:
+                        # Unknown format but not empty
+                        print(f"Extracted table in unknown format: {type(extracted_result)}")
+                        return {
+                            "success": True,
+                            "annotation_id": annotation.id,
+                            "result": extracted_result
+                        }
                 else:
                     # Fallback for empty result
                     print("No table content extracted. Returning fallback table.")
                     return {
                         "success": True,
                         "annotation_id": annotation.id,
-                        "result": ["<table><tr><td>No table content could be extracted</td></tr></table>"]
+                        "result": {
+                            "title": "Error",
+                            "description": "No table content could be extracted",
+                            "html": "<table><tr><td>No table content could be extracted</td></tr></table>"
+                        }
                     }
                     
             except Exception as table_error:
@@ -696,7 +718,11 @@ async def process_annotation(request: Request):
                 return {
                     "success": True,
                     "annotation_id": annotation.id,
-                    "result": [f"<table><tr><td>Error extracting table: {str(table_error)}</td></tr></table>"]
+                    "result": {
+                        "title": "Error",
+                        "description": f"Error extracting table: {str(table_error)}",
+                        "html": f"<table><tr><td>Error extracting table: {str(table_error)}</td></tr></table>"
+                    }
                 }
 
         elif annotation.type == "diagram":

@@ -138,13 +138,24 @@ export default function ContentTabs({
                   {annotation.result ? (
                     <div className="mt-2 overflow-auto">
                       {Array.isArray(annotation.result) && annotation.result.length > 0 ? (
+                        // Legacy format - array of HTML strings
                         annotation.result.map((htmlTable, idx) => (
                           <div key={idx} className="mb-4 border p-2 rounded">
                             <div dangerouslySetInnerHTML={{ __html: htmlTable }} />
                           </div>
                         ))
+                      ) : annotation.result.title && annotation.result.description && annotation.result.html ? (
+                        // New format with title, description and HTML
+                        <div className="mb-4">
+                          <h4 className="font-medium text-gray-800 mb-1 text-yellow-700">{annotation.result.title}</h4>
+                          <p className="text-sm text-gray-600 mb-3">{annotation.result.description}</p>
+                          <div className="border p-2 rounded bg-white overflow-auto">
+                            <div className="table-responsive" dangerouslySetInnerHTML={{ __html: annotation.result.html }} />
+                          </div>
+                        </div>
                       ) : (
-                        <div dangerouslySetInnerHTML={{ __html: Array.isArray(annotation.result) ? 'No table data extracted' : annotation.result }} />
+                        // Fallback for other formats
+                        <div dangerouslySetInnerHTML={{ __html: Array.isArray(annotation.result) ? 'No table data extracted' : (annotation.result.html || annotation.result) }} />
                       )}
                     </div>
                   ) : (

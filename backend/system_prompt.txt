@@ -51,6 +51,8 @@ Your role is to convert scanned images of tables into accurate HTML representati
 - No comments in the HTML code
 - Use `image here` for images and `logo here` for logos
 - Only use <final></final> tags for your completed, verified table
+- Also include <title> and <description> tags inside the <final></final> tags indicates the title of the table you would like to assign and a detailed description of the table.
+- So your structure would look like this: `<final><title>TITLE</title><description>DESCRIPTION</description><table>TABLE</table></final>`
 - Place only ONE final table inside <final> tags
 
 After completing your analysis and extraction, wrap your final HTML table in <final></final> tags:

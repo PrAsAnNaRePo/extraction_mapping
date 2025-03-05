@@ -12,26 +12,23 @@ load_dotenv()
 
 class TOCRAgent:
     def __init__(self, system_prompt) -> None:
-
         self.client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
         self.system_prompt = system_prompt
 
     def extract_code(self, content):
-        code_blocks = re.findall(r'<final>\n<table(.*?)</final>', content, re.DOTALL)
+        code_blocks = re.findall(r'<final>(.*?)</final>', content, re.DOTALL)
         if code_blocks:
-            # Add proper table tags and ensure </table> tag is included
-            processed_blocks = []
-            for block in code_blocks:
-                # Check if the block already ends with </table>
-                if block.strip().endswith('</table>'):
-                    processed_blocks.append('<table' + block)
-                else:
-                    processed_blocks.append('<table' + block + '</table>')
-            code_blocks = processed_blocks
-            
-        print(f"Extracted table HTML blocks: {code_blocks}")
-        return code_blocks
+            title = code_blocks[0].split('<title>')[1].split('</title>')[0]
+            description = code_blocks[0].split('<description>')[1].split('</description>')[0]
+            html = '<table>' + code_blocks[0].split('<table>')[1].split('</table>')[0].strip() + '</table>'
+            return {
+                'title': title,
+                'description': description,
+                'html': html
+            }
+        else:
+            return None
     
     def extract_table(self, base64_image):
         # Handle both formats: raw base64 data or data URLs
@@ -74,11 +71,7 @@ class TOCRAgent:
             
             print(response.content[0].text)
             extracted_code = self.extract_code(response.content[0].text)
-            if not extracted_code:
-                # If no table HTML was extracted, return a basic placeholder
-                table_html = ["<table><tr><td>No table content could be extracted</td></tr></table>"]
-                return table_html, response.usage
-                
+            print(extracted_code)
             return extracted_code, response.usage
             
         except Exception as e:
