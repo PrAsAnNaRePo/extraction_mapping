@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from table_agent import TableDetector
 from table_extract import TOCRAgent
 import diagram_extract
+from text_extract import TextAgent, system_instruction as text_system_instruction
 
 class TextEdit(BaseModel):
     page: int
@@ -41,6 +42,13 @@ class AnnotationData(BaseModel):
         "populate_by_name": True,  # Be flexible with field names 
     }
 
+class TableEdit(BaseModel):
+    """Model for table edit data."""
+    tableData: List[List[str]]
+    row: int
+    col: int
+    annotationId: str
+
 app = FastAPI()
 
 # Load the table detector model
@@ -54,6 +62,7 @@ except Exception as e:
 
 table_extractor = TOCRAgent(system_prompt=open('/home/prasanna/projs/extraction_mapping/backend/system_prompt.txt', 'r').read())
 diagram_extrator = diagram_extract.DiagramAgent(system_prompt=diagram_extract.system_instruction)
+text_extractor = TextAgent(system_prompt=text_system_instruction)
 
 # Configure CORS
 app.add_middleware(
@@ -510,86 +519,30 @@ async def process_annotation(request: Request):
                 # The image should already be correctly rotated at this point
                 print("Processing text annotation with normalized orientation")
                 
-                # No need for additional image saving here since we already saved debug images
+                # Process with the new TextAgent
+                print("Calling TextAgent for text extraction...")
                 
-                # Process with Surya OCR
-                print("Calling Surya OCR predictor...")
-                predictions = recognition_predictor(
-                    [image], 
-                    [["en"]], 
-                    detection_predictor,
-                    recognition_batch_size=16,
-                    detection_batch_size=16
-                )
-                print(f"OCR complete. Got {len(predictions)} prediction result(s)")
+                # Convert image to base64 for TextAgent
+                buffered = BytesIO()
+                # Convert RGBA to RGB if needed before saving as JPEG
+                if image.mode == 'RGBA':
+                    image_rgb = image.convert('RGB')
+                    image_rgb.save(buffered, format="JPEG")
+                else:
+                    image.save(buffered, format="JPEG")
+                img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
                 
-                try:
-                    serialized = [serialize_ocr_result(pred) for pred in predictions]
-                    print(f"Serialized results with {sum(len(result['text_lines']) for result in serialized)} total text lines")
-                    
-                    # If no text was detected, provide a meaningful result instead of empty
-                    if len(serialized) == 0 or sum(len(result['text_lines']) for result in serialized) == 0:
-                        print("No text was detected. Returning empty result with message.")
-                        return {
-                            "success": True,
-                            "annotation_id": annotation.id,
-                            "result": [{
-                                "text_lines": [{
-                                    "text": "No text detected in this area",
-                                    "confidence": 1.0,
-                                    "bbox": annotation.bbox,
-                                    "polygon": [[annotation.bbox[0], annotation.bbox[1]], 
-                                               [annotation.bbox[2], annotation.bbox[1]],
-                                               [annotation.bbox[2], annotation.bbox[3]], 
-                                               [annotation.bbox[0], annotation.bbox[3]]]
-                                }],
-                                "languages": ["en"],
-                                "image_bbox": [0, 0, image.width, image.height]
-                            }]
-                        }
-                    
-                    # Double check the structure of each text line to avoid validation errors
-                    for result in serialized:
-                        for line in result["text_lines"]:
-                            # Ensure required fields exist
-                            if "text" not in line:
-                                line["text"] = ""
-                            if "confidence" not in line:
-                                line["confidence"] = 1.0
-                            if "bbox" not in line:
-                                line["bbox"] = annotation.bbox
-                            if "polygon" not in line:
-                                line["polygon"] = [[annotation.bbox[0], annotation.bbox[1]], 
-                                                  [annotation.bbox[2], annotation.bbox[1]],
-                                                  [annotation.bbox[2], annotation.bbox[3]], 
-                                                  [annotation.bbox[0], annotation.bbox[3]]]
-                    
-                    print("Successfully processed text annotation")
-                    return {
-                        "success": True,
-                        "annotation_id": annotation.id,
-                        "result": serialized
-                    }
-                except Exception as serialize_error:
-                    print(f"Error serializing OCR results: {str(serialize_error)}")
-                    # Return a fallback result with the error message
-                    return {
-                        "success": True,
-                        "annotation_id": annotation.id,
-                        "result": [{
-                            "text_lines": [{
-                                "text": f"Error processing text: {str(serialize_error)}",
-                                "confidence": 1.0,
-                                "bbox": annotation.bbox,
-                                "polygon": [[annotation.bbox[0], annotation.bbox[1]], 
-                                           [annotation.bbox[2], annotation.bbox[1]],
-                                           [annotation.bbox[2], annotation.bbox[3]], 
-                                           [annotation.bbox[0], annotation.bbox[3]]]
-                            }],
-                            "languages": ["en"],
-                            "image_bbox": [0, 0, image.width, image.height]
-                        }]
-                    }
+                # Call TextAgent
+                text_result = text_extractor(img_base64)
+                print(f"Text extraction complete. Got result: {text_result}")
+                
+                # Format the result to match the expected structure in the frontend
+                return {
+                    "success": True,
+                    "annotation_id": annotation.id,
+                    "result": text_result
+                }
+                
             except Exception as e:
                 print(f"ERROR in text processing: {str(e)}")
                 import traceback
@@ -598,19 +551,10 @@ async def process_annotation(request: Request):
                 return {
                     "success": True,
                     "annotation_id": annotation.id,
-                    "result": [{
-                        "text_lines": [{
-                            "text": f"Error: {str(e)}",
-                            "confidence": 1.0,
-                            "bbox": annotation.bbox,
-                            "polygon": [[annotation.bbox[0], annotation.bbox[1]], 
-                                       [annotation.bbox[2], annotation.bbox[1]],
-                                       [annotation.bbox[2], annotation.bbox[3]], 
-                                       [annotation.bbox[0], annotation.bbox[3]]]
-                        }],
-                        "languages": ["en"],
-                        "image_bbox": [0, 0, image.width, image.height]
-                    }]
+                    "result": {
+                        "error": True,
+                        "message": f"Error processing text: {str(e)}"
+                    }
                 }
         
         elif annotation.type == "table":
@@ -790,3 +734,43 @@ async def process_annotation(request: Request):
                 "type": annotation.type
             }
         }
+
+@app.post("/api/table/save")
+async def save_table_data(table_edit: TableEdit):
+    """Save edited table data."""
+    try:
+        print(f"Received table edit for annotation ID: {table_edit.annotationId}")
+        print(f"Edited cell at row {table_edit.row}, column {table_edit.col}")
+        print(f"Table data has {len(table_edit.tableData)} rows and {len(table_edit.tableData[0]) if table_edit.tableData else 0} columns")
+        
+        # Convert the 2D array back to HTML table format
+        html_table = "<table>"
+        for row in table_edit.tableData:
+            html_table += "<tr>"
+            for cell in row:
+                html_table += f"<td>{cell}</td>"
+            html_table += "</tr>"
+        html_table += "</table>"
+
+        # Here you can implement storage logic if needed
+        # For now, we'll just return success since the frontend maintains the state
+        return JSONResponse({
+            "success": True,
+            "message": "Table data saved successfully",
+            "data": {
+                "annotationId": table_edit.annotationId,
+                "row": table_edit.row,
+                "col": table_edit.col,
+                "html": html_table,
+                "rowCount": len(table_edit.tableData),
+                "colCount": len(table_edit.tableData[0]) if table_edit.tableData else 0
+            }
+        })
+    except Exception as e:
+        print(f"Error saving table data: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save table data: {str(e)}"
+        )

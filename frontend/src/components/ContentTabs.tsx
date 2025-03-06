@@ -3,22 +3,37 @@
 import { useState } from 'react';
 import { Annotation, AnnotationType } from '@/types/pdf';
 import { utils, writeFile } from 'xlsx';
+import { EditableTable } from './EditableTable';
 
 interface ContentTabsProps {
   annotations: Annotation[];
   textContent?: React.ReactNode;
   currentTab?: AnnotationType;
   onTabChange?: (tab: AnnotationType) => void;
+  onAnnotationsUpdate?: (annotations: Annotation[]) => void;
 }
+
+const convertHtmlTableToArray = (htmlString: string): string[][] => {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(htmlString, 'text/html');
+  const table = doc.querySelector('table');
+  if (!table) return [];
+
+  return Array.from(table.rows).map(row => 
+    Array.from(row.cells).map(cell => cell.textContent || '')
+  );
+};
 
 export default function ContentTabs({
   annotations,
   textContent,
   currentTab = AnnotationType.TEXT,
-  onTabChange
+  onTabChange,
+  onAnnotationsUpdate
 }: ContentTabsProps) {
   const [activeTab, setActiveTab] = useState<AnnotationType>(currentTab);
   const [exportLoading, setExportLoading] = useState<string | null>(null);
+  const [editedTables, setEditedTables] = useState<Record<string, string[][]>>({});
   
   const textCount = annotations.filter(a => a.type === AnnotationType.TEXT).length;
   const tableCount = annotations.filter(a => a.type === AnnotationType.TABLE).length;
@@ -48,71 +63,28 @@ export default function ContentTabs({
       // Create a new workbook
       const wb = utils.book_new();
       
-      // Determine if we're using the new or legacy format
-      if (typeof annotation.result === 'object' && annotation.result.html) {
-        // New format with title, description, and HTML
-        // Create a temporary container to parse the HTML
-        const container = document.createElement('div');
-        container.innerHTML = annotation.result.html;
-        
-        // Find the table element
-        const tableEl = container.querySelector('table');
-        if (!tableEl) {
-          throw new Error("No table found in HTML");
-        }
-        
-        // Convert the table to a worksheet
-        const ws = utils.table_to_sheet(tableEl);
-        
-        // Add the worksheet to the workbook
-        // Use the table title if available, otherwise use a default name
-        const sheetName = annotation.result.title 
-          ? annotation.result.title.substring(0, 30) // XLSX has a 31 char limit for sheet names
-          : `Table ${annotationId.substring(0, 8)}`;
-        
-        utils.book_append_sheet(wb, ws, sheetName);
-      } 
-      else if (Array.isArray(annotation.result)) {
-        // Legacy format - array of HTML strings
-        annotation.result.forEach((htmlTable, idx) => {
-          // Create a temporary container to parse the HTML
-          const container = document.createElement('div');
-          container.innerHTML = htmlTable;
-          
-          // Find the table element
-          const tableEl = container.querySelector('table');
-          if (!tableEl) {
-            return; // Skip this one if no table is found
-          }
-          
-          // Convert the table to a worksheet
-          const ws = utils.table_to_sheet(tableEl);
-          
-          // Add the worksheet to the workbook
-          utils.book_append_sheet(wb, ws, `Table ${idx + 1}`);
-        });
-        
-        // If no tables were found, throw an error
-        if (wb.SheetNames.length === 0) {
-          throw new Error("No valid tables found in the data");
-        }
-      } 
-      else {
-        throw new Error("Unsupported table format");
-      }
+      // Use edited data if available, otherwise use original data
+      const tableData = editedTables[annotationId] || convertHtmlTableToArray(
+        typeof annotation.result === 'object' ? annotation.result.html : annotation.result[0]
+      );
       
-      // Generate filename from annotation ID
-      const filename = `table_${annotationId.substring(0, 8)}.xlsx`;
+      // Convert the array data to a worksheet
+      const ws = utils.aoa_to_sheet(tableData);
       
-      // Write the workbook and trigger download
-      writeFile(wb, filename);
+      // Add the worksheet to the workbook
+      const sheetName = typeof annotation.result === 'object' && annotation.result.title
+        ? annotation.result.title.substring(0, 30)
+        : `Table ${annotationId.substring(0, 8)}`;
       
-      // Reset loading state
-      setExportLoading(null);
+      utils.book_append_sheet(wb, ws, sheetName);
+      
+      // Trigger download
+      writeFile(wb, `${sheetName}.xlsx`);
+      
     } catch (error) {
-      console.error("Error exporting table:", error);
+      console.error('Error exporting table:', error);
+    } finally {
       setExportLoading(null);
-      alert(`Export failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
   
@@ -121,82 +93,82 @@ export default function ContentTabs({
     setExportLoading('all');
     
     try {
-      // Filter processed table annotations
-      const tableAnnotations = annotations.filter(
-        a => a.type === AnnotationType.TABLE && a.processed && a.result
-      );
-      
-      if (tableAnnotations.length === 0) {
-        throw new Error("No processed tables to export");
-      }
-      
-      // Create a new workbook
       const wb = utils.book_new();
-      let tablesAdded = 0;
+      let hasData = false;
       
-      // Process each table annotation
-      tableAnnotations.forEach((annotation, annotationIndex) => {
-        // Handle new format with title, description, and HTML
-        if (typeof annotation.result === 'object' && annotation.result.html) {
-          // Create a temporary container to parse the HTML
-          const container = document.createElement('div');
-          container.innerHTML = annotation.result.html;
-          
-          // Find the table element
-          const tableEl = container.querySelector('table');
-          if (!tableEl) return; // Skip if no table found
-          
-          // Convert the table to a worksheet
-          const ws = utils.table_to_sheet(tableEl);
-          
-          // Add the worksheet to the workbook
-          // Use the table title if available, otherwise a default name
-          const sheetName = annotation.result.title 
-            ? annotation.result.title.substring(0, 30) // XLSX has a 31 char limit for sheet names
-            : `Table ${annotationIndex + 1}`;
-          
-          utils.book_append_sheet(wb, ws, sheetName);
-          tablesAdded++;
-        }
-        // Handle legacy format - array of HTML strings
-        else if (Array.isArray(annotation.result)) {
-          annotation.result.forEach((htmlTable, idx) => {
-            // Create a temporary container to parse the HTML
-            const container = document.createElement('div');
-            container.innerHTML = htmlTable;
-            
-            // Find the table element
-            const tableEl = container.querySelector('table');
-            if (!tableEl) return; // Skip if no table found
-            
-            // Convert the table to a worksheet
-            const ws = utils.table_to_sheet(tableEl);
-            
-            // Add the worksheet to the workbook
-            utils.book_append_sheet(wb, ws, `Table ${annotationIndex + 1}_${idx + 1}`);
-            tablesAdded++;
-          });
-        }
+      filteredAnnotations.forEach((annotation, index) => {
+        if (!annotation.processed || !annotation.result) return;
+        
+        // Use edited data if available, otherwise use original data
+        const tableData = editedTables[annotation.id] || convertHtmlTableToArray(
+          typeof annotation.result === 'object' ? annotation.result.html : annotation.result[0]
+        );
+        
+        const ws = utils.aoa_to_sheet(tableData);
+        
+        const sheetName = typeof annotation.result === 'object' && annotation.result.title
+          ? annotation.result.title.substring(0, 30)
+          : `Table ${index + 1}`;
+        
+        utils.book_append_sheet(wb, ws, sheetName);
+        hasData = true;
       });
       
-      // If no tables were added, throw an error
-      if (tablesAdded === 0) {
-        throw new Error("No valid tables found to export");
+      if (!hasData) {
+        throw new Error("No valid tables found");
       }
       
-      // Generate filename
-      const filename = `tables_export_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      writeFile(wb, 'all_tables.xlsx');
       
-      // Write the workbook and trigger download
-      writeFile(wb, filename);
     } catch (error) {
-      console.error("Error exporting tables:", error);
-      alert(`Export failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error('Error exporting all tables:', error);
     } finally {
       setExportLoading(null);
     }
   };
-  
+
+  // Update the handleTableSave function to handle all table operations
+  const handleTableSave = async (data: string[][], row: number, col: number, annotationId: string) => {
+    try {
+      console.log(`Saving table edit for annotation ${annotationId}, row ${row}, col ${col}`);
+      
+      // Update local state immediately for a responsive UI
+      setEditedTables(prev => ({
+        ...prev,
+        [annotationId]: data
+      }));
+      
+      // Use the correct backend URL with error handling
+      try {
+        const response = await fetch('http://localhost:3002/api/table/save', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            tableData: data,
+            row,
+            col,
+            annotationId
+          }),
+        });
+
+        if (!response.ok) {
+          console.error(`Server responded with status: ${response.status}`);
+          // Continue with UI updates even if server request fails
+        } else {
+          const result = await response.json();
+          console.log('Table save response:', result);
+        }
+      } catch (fetchError) {
+        console.error('Network error when saving table:', fetchError);
+        // Continue with UI updates even if server request fails
+      }
+    } catch (error) {
+      console.error('Error in handleTableSave:', error);
+    }
+  };
+
   return (
     <div className="h-full flex flex-col bg-white overflow-hidden">
       {/* Tabs */}
@@ -238,9 +210,9 @@ export default function ContentTabs({
       </div>
       
       {/* Tab Content */}
-      <div className="flex-1 overflow-auto p-4">
+      <div className="flex-1 overflow-auto p-2">
         {activeTab === AnnotationType.TEXT && (
-          <div className="space-y-4">
+          <div className="space-y-3">
             {textContent || (
               filteredAnnotations.length === 0 ? (
                 <p className="text-gray-500">No text annotations yet.</p>
@@ -270,7 +242,34 @@ export default function ContentTabs({
                             </div>
                           )) 
                           : 
-                          annotation.result
+                          // Handle the new text extraction format
+                          <div className="space-y-3">
+                            {/* Title */}
+                            {annotation.result.title && (
+                              <div>
+                                <h3 className="text-blue-700 font-medium text-base">Title:</h3>
+                                <p className="font-semibold">{annotation.result.title}</p>
+                              </div>
+                            )}
+                            
+                            {/* Description */}
+                            {annotation.result.description && (
+                              <div>
+                                <h3 className="text-blue-700 font-medium text-base">Description:</h3>
+                                <p className="text-gray-800">{annotation.result.description}</p>
+                              </div>
+                            )}
+                            
+                            {/* Extracted Content */}
+                            {annotation.result.extracted_content && (
+                              <div>
+                                <h3 className="text-blue-700 font-medium text-base">Extracted Content:</h3>
+                                <div className="bg-gray-100 p-2 rounded whitespace-pre-wrap font-mono text-xs">
+                                  {annotation.result.extracted_content}
+                                </div>
+                              </div>
+                            )}
+                          </div>
                         }
                       </div>
                     ) : (
@@ -286,7 +285,7 @@ export default function ContentTabs({
         )}
         
         {activeTab === AnnotationType.TABLE && (
-          <div className="space-y-4">
+          <div className="space-y-3">
             {filteredAnnotations.length === 0 ? (
               <p className="text-gray-500">No table annotations yet.</p>
             ) : (
@@ -330,8 +329,7 @@ export default function ContentTabs({
                       </span>
                     </div>
                     {annotation.result ? (
-                      <div className="mt-2 overflow-auto">
-                        {/* Export single table button */}
+                      <div className="mt-2 overflow-auto w-full">
                         <div className="mb-2 flex justify-end">
                           <button
                             onClick={() => exportTableToExcel(annotation.id)}
@@ -356,31 +354,18 @@ export default function ContentTabs({
                             )}
                           </button>
                         </div>
-                        
-                        {Array.isArray(annotation.result) && annotation.result.length > 0 ? (
-                          // Legacy format - array of HTML strings
-                          annotation.result.map((htmlTable, idx) => (
-                            <div key={idx} className="mb-4 border p-2 rounded">
-                              <div dangerouslySetInnerHTML={{ __html: htmlTable }} />
-                            </div>
-                          ))
-                        ) : annotation.result.title && annotation.result.description && annotation.result.html ? (
-                          // New format with title, description and HTML
-                          <div className="mb-4">
-                            <h4 className="font-medium text-gray-800 mb-1 text-yellow-700">{annotation.result.title}</h4>
-                            <p className="text-sm text-gray-600 mb-3">{annotation.result.description}</p>
-                            <div className="border p-2 rounded bg-white overflow-auto">
-                              <div className="table-responsive" dangerouslySetInnerHTML={{ __html: annotation.result.html }} />
-                            </div>
-                          </div>
-                        ) : (
-                          // Fallback for other formats
-                          <div dangerouslySetInnerHTML={{ __html: Array.isArray(annotation.result) ? 'No table data extracted' : (annotation.result.html || annotation.result) }} />
-                        )}
+                        <div className="border rounded overflow-hidden w-full">
+                          <EditableTable
+                            data={editedTables[annotation.id] || convertHtmlTableToArray(
+                              typeof annotation.result === 'object' ? annotation.result.html : annotation.result[0]
+                            )}
+                            onSave={(data, row, col) => handleTableSave(data, row, col, annotation.id)}
+                          />
+                        </div>
                       </div>
                     ) : (
                       <div className="mt-2 text-sm text-gray-500 italic">
-                        Process this annotation to extract the table data.
+                        Process this annotation to extract the table.
                       </div>
                     )}
                   </div>
@@ -391,7 +376,7 @@ export default function ContentTabs({
         )}
         
         {activeTab === AnnotationType.DIAGRAM && (
-          <div className="space-y-4">
+          <div className="space-y-3">
             {filteredAnnotations.length === 0 ? (
               <p className="text-gray-500">No diagram annotations yet.</p>
             ) : (

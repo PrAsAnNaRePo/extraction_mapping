@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Annotation, AnnotationType, OCRResult, OCRTextLine } from '@/types/pdf';
 import AnnotationControls from './AnnotationControls';
 
@@ -57,6 +57,12 @@ export default function ImageAnnotator({
   const [error, setError] = useState<string>();
   const [zoomLevel, setZoomLevel] = useState(1);
   const [localRotation, setLocalRotation] = useState(rotation); // Internal rotation state
+  const [isLoading, setIsLoading] = useState(false); // Add loading state
+  
+  // New state for panning functionality
+  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
   
   // Annotation related states
   const [isDrawing, setIsDrawing] = useState(false);
@@ -68,6 +74,18 @@ export default function ImageAnnotator({
 
   // Flatten all text lines from all OCR results
   const textLines = ocrResults.flatMap(result => result.text_lines);
+  
+  // Helper function to get the effective rotation
+  const getEffectiveRotation = useCallback(() => {
+    // Use controlled rotation if provided, otherwise use local state
+    return onRotationChange ? rotation : localRotation;
+  }, [onRotationChange, rotation, localRotation]);
+  
+  // Helper to check if rotation is 90 or 270 degrees
+  const isRotated90or270 = useCallback(() => {
+    const currentRotation = getEffectiveRotation();
+    return currentRotation === 90 || currentRotation === 270;
+  }, [getEffectiveRotation]);
   
   // Handle window resize to redraw canvas
   useEffect(() => {
@@ -87,169 +105,139 @@ export default function ImageAnnotator({
   }, [image]);
 
   useEffect(() => {
-    const loadImage = (src: string) => {
-      // Create a new image with higher quality settings
+    const loadImage = async (src: string) => {
+      setIsLoading(true);
+      setError(undefined);
+
       const img = new Image();
-      
-      // Set crossOrigin to allow processing the image on canvas 
       img.crossOrigin = 'anonymous';
       
-      // Set image loading attributes for better quality
-      img.setAttribute('decoding', 'sync'); // Decode synchronously for better initial quality
-      img.setAttribute('loading', 'eager'); // Load image eagerly
-      
-      // Handle successful load
-      img.onload = () => {
-        console.log(`Image loaded successfully: ${img.naturalWidth}x${img.naturalHeight}`);
+      try {
+        await new Promise((resolve, reject) => {
+          img.onload = () => {
+            console.log(`Image loaded: ${img.naturalWidth}x${img.naturalHeight}`);
+            resolve(null);
+          };
+          img.onerror = () => reject(new Error('Failed to load image'));
+          img.src = src;
+        });
+
         setImage(img);
-        setError(undefined);
         
-        // Reset scale to 1, it will be calculated properly in the render function
-        setScale(1);
-      };
-      
-      // Handle loading error
-      img.onerror = () => {
-        console.error('Failed to load image');
+        // Immediately render the image if canvas is ready
+        const canvas = canvasRef.current;
+        const ctx = canvas?.getContext('2d');
+        if (canvas && ctx) {
+          // Set initial canvas size to match image
+          canvas.width = img.naturalWidth;
+          canvas.height = img.naturalHeight;
+          ctx.drawImage(img, 0, 0);
+        }
+      } catch (err) {
+        console.error('Image load error:', err);
         setError('Failed to load image');
         setImage(null);
-      };
-      
-      // Set source after attaching event handlers
-      img.src = src;
+      } finally {
+        setIsLoading(false);
+      }
     };
 
-    if (pageImage) {
-      // Check if we're dealing with a base64 image
-      const isBase64 = typeof pageImage === 'string' && pageImage.startsWith('data:');
-      console.log(`Loading page image. Is base64: ${isBase64}`);
-      loadImage(pageImage);
-    } else if (imageUrl) {
-      console.log(`Loading image from URL: ${imageUrl}`);
-      loadImage(imageUrl);
+    if (pageImage || imageUrl) {
+      loadImage(pageImage || imageUrl);
     }
   }, [imageUrl, pageImage]);
 
   useEffect(() => {
-    if (!canvasRef.current || !image) return;
+    if (!image || !canvasRef.current) return;
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Get the actual container dimensions
-    const container = canvas.parentElement;
-    if (!container) return;
+    // Calculate dimensions
+    const containerRect = containerRef.current?.getBoundingClientRect();
+    if (!containerRect) return;
 
-    // Calculate proper scale based on container and image dimensions
-    // Measure the available space for the canvas, accounting for any padding/margins
-    const containerRect = container.getBoundingClientRect();
-    const containerWidth = containerRect.width;
-    const containerHeight = containerRect.height;
+    // Get effective dimensions based on rotation
+    const dimensionsRotated = isRotated90or270();
+    const effectiveImageWidth = dimensionsRotated ? image.naturalHeight : image.naturalWidth;
+    const effectiveImageHeight = dimensionsRotated ? image.naturalWidth : image.naturalHeight;
     
-    console.log(`Container dimensions: ${containerWidth}x${containerHeight}`);
-    console.log(`Image dimensions: ${image.width}x${image.height}`);
+    // Calculate scale to fit container while maintaining aspect ratio
+    const containerAspect = containerRect.width / containerRect.height;
+    const imageAspect = effectiveImageWidth / effectiveImageHeight;
     
-    // Get the current rotation value (from either prop or local state)
-    const activeRotation = onRotationChange ? rotation : localRotation;
-    console.log(`Current rotation: ${activeRotation} degrees`);
-    
-    // Determine dimensions based on rotation
-    const isRotated90or270 = activeRotation === 90 || activeRotation === 270;
-    const imageWidth = isRotated90or270 ? image.height : image.width;
-    const imageHeight = isRotated90or270 ? image.width : image.height;
-    
-    // For higher quality, we'll use more of the container but still leave some padding
-    const maxWidth = containerWidth * 0.98;  // Use 98% of container width
-    const maxHeight = containerHeight * 0.98; // Use 98% of container height
-    
-    // Calculate scaling factors with higher precision
-    const scaleX = maxWidth / imageWidth;
-    const scaleY = maxHeight / imageHeight;
-    
-    // Use the smaller scale to ensure image fits completely with proper aspect ratio
-    const newScale = Math.min(scaleX, scaleY);
-    
-    // For very small images, increase the maximum scale to allow better resolution
-    // Allow up to 4x enlargement for better quality on high-DPI displays
-    const limitedScale = Math.min(newScale, 4.0);
-    
-    console.log(`Calculated scale: ${limitedScale.toFixed(2)}`);
-    setScale(limitedScale);
-    
-    // Set canvas size based on the calculated scale to maintain aspect ratio
-    canvas.width = imageWidth * newScale;
-    canvas.height = imageHeight * newScale;
-    
-    // Track the actual canvas dimensions for calculating relative coordinates
-    canvas.dataset.actualWidth = String(canvas.width);
-    canvas.dataset.actualHeight = String(canvas.height);
-    canvas.dataset.rotation = String(activeRotation);
+    let newWidth, newHeight;
+    if (containerAspect > imageAspect) {
+      // Container is wider than image
+      newHeight = containerRect.height;
+      newWidth = newHeight * imageAspect;
+    } else {
+      // Container is taller than image
+      newWidth = containerRect.width;
+      newHeight = newWidth / imageAspect;
+    }
 
-    // Clear canvas
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // Update canvas size and clear it
+    canvas.width = newWidth;
+    canvas.height = newHeight;
 
-    // Apply advanced image rendering improvements
-    ctx.imageSmoothingEnabled = true;  // Enable image smoothing
-    ctx.imageSmoothingQuality = "high"; // Use high quality smoothing
-    
-    // Clear any previous filters and set composite operation
+    // Set up high quality rendering with optimal settings
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     ctx.globalCompositeOperation = 'source-over';
     
-    // Apply enhanced image processing with improved filters
-    // Increase contrast, clarity and sharpen edges while maintaining natural colors
-    ctx.filter = 'contrast(1.2) saturate(1.1) brightness(1.02)';
-    
-    // Apply rotation to canvas
+    // Apply image enhancement filters
+    ctx.filter = 'contrast(1.1) saturate(1.05) brightness(1.02)';
+
+    // Save the current context state and set up transformation
     ctx.save();
-    ctx.translate(canvas.width/2, canvas.height/2);
-    ctx.rotate((activeRotation * Math.PI) / 180);
-    
-    // Draw the image with correct offset based on rotation
-    if (activeRotation === 0) {
-      ctx.drawImage(image, -canvas.width/2, -canvas.height/2, canvas.width, canvas.height);
-    } else if (activeRotation === 90) {
-      ctx.drawImage(image, -canvas.height/2, -canvas.width/2, canvas.height, canvas.width);
-    } else if (activeRotation === 180) {
-      ctx.drawImage(image, -canvas.width/2, -canvas.height/2, canvas.width, canvas.height);
-    } else if (activeRotation === 270) {
-      ctx.drawImage(image, -canvas.height/2, -canvas.width/2, canvas.height, canvas.width);
-    }
-    
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.rotate((localRotation * Math.PI) / 180);
+
+    // Draw image with proper dimensions based on rotation
+    const drawRotated = isRotated90or270();
+    const drawWidth = drawRotated ? canvas.height : canvas.width;
+    const drawHeight = drawRotated ? canvas.width : canvas.height;
+    ctx.drawImage(image, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+
+    // Restore the context state
     ctx.restore();
     
-    // Reset filter for other rendering operations
+    // Calculate and set the scale based on the new dimensions
+    const newScale = canvas.width / effectiveImageWidth;
+    console.log(`Calculated scale: ${newScale.toFixed(2)}`);
+    setScale(newScale);
+    
+    // Track the actual canvas dimensions for relative coordinates
+    canvas.dataset.actualWidth = String(canvas.width);
+    canvas.dataset.actualHeight = String(canvas.height);
+    canvas.dataset.rotation = String(localRotation);
+    
+    // Reset filter for subsequent rendering operations
     ctx.filter = 'none';
 
     // Get OCR image bounds (if available) to properly scale annotations
-    let ocrImageWidth = 0;
-    let ocrImageHeight = 0;
+    let ocrImageWidth = image.naturalWidth;
+    let ocrImageHeight = image.naturalHeight;
     
     if (ocrResults.length > 0 && ocrResults[0].image_bbox) {
-      // OCR results include the image dimensions used during processing
-      // This contains the original dimensions used during OCR analysis
+      // Use OCR dimensions if available, as they represent the original analysis dimensions
       const [_, __, imgWidth, imgHeight] = ocrResults[0].image_bbox;
-      ocrImageWidth = imgWidth;
-      ocrImageHeight = imgHeight;
-    } else if (image) {
-      // Fallback to the natural image dimensions if OCR bounds aren't available
-      ocrImageWidth = image.naturalWidth;
-      ocrImageHeight = image.naturalHeight;
+      ocrImageWidth = imgWidth || ocrImageWidth;
+      ocrImageHeight = imgHeight || ocrImageHeight;
     }
     
     // Calculate scale factors between OCR coordinates and canvas dimensions
-    // This ensures the bounding boxes match the displayed image dimensions
-    let xScaleFactor, yScaleFactor;
-    
-    if (activeRotation === 90 || activeRotation === 270) {
-      // For 90° and 270° rotations, width and height are swapped
-      xScaleFactor = ocrImageWidth > 0 ? (canvas.height / ocrImageWidth) : newScale;
-      yScaleFactor = ocrImageHeight > 0 ? (canvas.width / ocrImageHeight) : newScale;
-    } else {
-      // For 0° and 180° rotations, normal scaling
-      xScaleFactor = ocrImageWidth > 0 ? (canvas.width / ocrImageWidth) : newScale;
-      yScaleFactor = ocrImageHeight > 0 ? (canvas.height / ocrImageHeight) : newScale;
-    }
+    // This ensures annotations match the displayed image dimensions
+    const scaleRotated = isRotated90or270();
+    const xScaleFactor = scaleRotated
+      ? canvas.height / ocrImageWidth 
+      : canvas.width / ocrImageWidth;
+      
+    const yScaleFactor = scaleRotated
+      ? canvas.width / ocrImageHeight 
+      : canvas.height / ocrImageHeight;
 
     // Store scale factors as data attributes for use by mouse interaction functions
     canvas.dataset.xScale = String(xScaleFactor);
@@ -260,33 +248,42 @@ export default function ImageAnnotator({
       textLines.forEach((line) => {
         const [x, y, x2, y2] = line.bbox;
         
-        // Scale bbox coordinates to match the canvas dimensions
+        // Scale and transform bbox coordinates based on rotation
         let scaledX, scaledY, scaledWidth, scaledHeight;
-
-        if (activeRotation === 0) {
-          // Normal orientation
-          scaledX = x * xScaleFactor;
-          scaledY = y * yScaleFactor;
-          scaledWidth = (x2 - x) * xScaleFactor;
-          scaledHeight = (y2 - y) * yScaleFactor;
-        } else if (activeRotation === 90) {
-          // 90 degree rotation - swap coordinates and adjust for rotation
-          scaledX = canvas.width - (y + (y2 - y)) * yScaleFactor;
-          scaledY = x * xScaleFactor;
-          scaledWidth = (y2 - y) * yScaleFactor;
-          scaledHeight = (x2 - x) * xScaleFactor;
-        } else if (activeRotation === 180) {
-          // 180 degree rotation - invert coordinates
-          scaledX = canvas.width - (x + (x2 - x)) * xScaleFactor;
-          scaledY = canvas.height - (y + (y2 - y)) * yScaleFactor;
-          scaledWidth = (x2 - x) * xScaleFactor;
-          scaledHeight = (y2 - y) * yScaleFactor;
-        } else if (activeRotation === 270) {
-          // 270 degree rotation - swap coordinates and adjust for rotation
-          scaledX = y * yScaleFactor;
-          scaledY = canvas.height - (x + (x2 - x)) * xScaleFactor;
-          scaledWidth = (y2 - y) * yScaleFactor;
-          scaledHeight = (x2 - x) * xScaleFactor;
+        
+        switch (getEffectiveRotation()) {
+          case 90:
+            // 90 degree rotation - swap coordinates and adjust for rotation
+            scaledX = canvas.width - (y + (y2 - y)) * yScaleFactor;
+            scaledY = x * xScaleFactor;
+            scaledWidth = (y2 - y) * yScaleFactor;
+            scaledHeight = (x2 - x) * xScaleFactor;
+            break;
+            
+          case 180:
+            // 180 degree rotation - invert coordinates
+            scaledX = canvas.width - (x + (x2 - x)) * xScaleFactor;
+            scaledY = canvas.height - (y + (y2 - y)) * yScaleFactor;
+            scaledWidth = (x2 - x) * xScaleFactor;
+            scaledHeight = (y2 - y) * yScaleFactor;
+            break;
+            
+          case 270:
+            // 270 degree rotation - swap coordinates and adjust for rotation
+            scaledX = y * yScaleFactor;
+            scaledY = canvas.height - (x + (x2 - x)) * xScaleFactor;
+            scaledWidth = (y2 - y) * yScaleFactor;
+            scaledHeight = (x2 - x) * xScaleFactor;
+            break;
+            
+          case 0:
+          default:
+            // No rotation needed
+            scaledX = x * xScaleFactor;
+            scaledY = y * yScaleFactor;
+            scaledWidth = (x2 - x) * xScaleFactor;
+            scaledHeight = (y2 - y) * yScaleFactor;
+            break;
         }
 
         // Set colors and opacity based on state
@@ -315,33 +312,42 @@ export default function ImageAnnotator({
       annotations.forEach((annotation) => {
         const [x, y, x2, y2] = annotation.bbox;
         
-        // Scale bbox coordinates to match the canvas dimensions
+        // Scale and transform bbox coordinates based on rotation
         let scaledX, scaledY, scaledWidth, scaledHeight;
-
-        if (activeRotation === 0) {
-          // Normal orientation
-          scaledX = x * xScaleFactor;
-          scaledY = y * yScaleFactor;
-          scaledWidth = (x2 - x) * xScaleFactor;
-          scaledHeight = (y2 - y) * yScaleFactor;
-        } else if (activeRotation === 90) {
-          // 90 degree rotation - swap coordinates and adjust for rotation
-          scaledX = canvas.width - (y + (y2 - y)) * yScaleFactor;
-          scaledY = x * xScaleFactor;
-          scaledWidth = (y2 - y) * yScaleFactor;
-          scaledHeight = (x2 - x) * xScaleFactor;
-        } else if (activeRotation === 180) {
-          // 180 degree rotation - invert coordinates
-          scaledX = canvas.width - (x + (x2 - x)) * xScaleFactor;
-          scaledY = canvas.height - (y + (y2 - y)) * yScaleFactor;
-          scaledWidth = (x2 - x) * xScaleFactor;
-          scaledHeight = (y2 - y) * yScaleFactor;
-        } else if (activeRotation === 270) {
-          // 270 degree rotation - swap coordinates and adjust for rotation
-          scaledX = y * yScaleFactor;
-          scaledY = canvas.height - (x + (x2 - x)) * xScaleFactor;
-          scaledWidth = (y2 - y) * yScaleFactor;
-          scaledHeight = (x2 - x) * xScaleFactor;
+        
+        switch (getEffectiveRotation()) {
+          case 90:
+            // 90 degree rotation - swap coordinates and adjust for rotation
+            scaledX = canvas.width - (y + (y2 - y)) * yScaleFactor;
+            scaledY = x * xScaleFactor;
+            scaledWidth = (y2 - y) * yScaleFactor;
+            scaledHeight = (x2 - x) * xScaleFactor;
+            break;
+            
+          case 180:
+            // 180 degree rotation - invert coordinates
+            scaledX = canvas.width - (x + (x2 - x)) * xScaleFactor;
+            scaledY = canvas.height - (y + (y2 - y)) * yScaleFactor;
+            scaledWidth = (x2 - x) * xScaleFactor;
+            scaledHeight = (y2 - y) * yScaleFactor;
+            break;
+            
+          case 270:
+            // 270 degree rotation - swap coordinates and adjust for rotation
+            scaledX = y * yScaleFactor;
+            scaledY = canvas.height - (x + (x2 - x)) * xScaleFactor;
+            scaledWidth = (y2 - y) * yScaleFactor;
+            scaledHeight = (x2 - x) * xScaleFactor;
+            break;
+            
+          case 0:
+          default:
+            // No rotation needed
+            scaledX = x * xScaleFactor;
+            scaledY = y * yScaleFactor;
+            scaledWidth = (x2 - x) * xScaleFactor;
+            scaledHeight = (y2 - y) * yScaleFactor;
+            break;
         }
 
         // Check if this annotation is selected
@@ -423,42 +429,44 @@ export default function ImageAnnotator({
           const deleteButtonSize = 16;
           ctx.fillStyle = '#ef4444'; // Red background
           
-          // Get the current rotation value (from either prop or local state)
-          const activeRotation = onRotationChange ? rotation : localRotation;
-          
-          // Position delete button based on rotation
+          // Position delete button and text based on rotation
           let deleteButtonX, deleteButtonY, textX, textY;
+          const padding = 5;
+          const textPadding = 12; // Distance from button to text
           
-          if (activeRotation === 0) {
-            // Top-right corner for 0 degrees
-            deleteButtonX = scaledX + scaledWidth - deleteButtonSize - 5;
-            deleteButtonY = scaledY + 5;
-            textX = scaledX + scaledWidth - deleteButtonSize + 5;
-            textY = scaledY + 17;
-          } else if (activeRotation === 90) {
-            // Top-left corner for 90 degrees
-            deleteButtonX = scaledX + 5;
-            deleteButtonY = scaledY + 5;
-            textX = scaledX + 5 + 5;
-            textY = scaledY + 17;
-          } else if (activeRotation === 180) {
-            // Bottom-left corner for 180 degrees
-            deleteButtonX = scaledX + 5;
-            deleteButtonY = scaledY + scaledHeight - deleteButtonSize - 5;
-            textX = scaledX + 5 + 5;
-            textY = scaledY + scaledHeight - deleteButtonSize + 7;
-          } else if (activeRotation === 270) {
-            // Bottom-right corner for 270 degrees
-            deleteButtonX = scaledX + scaledWidth - deleteButtonSize - 5;
-            deleteButtonY = scaledY + scaledHeight - deleteButtonSize - 5;
-            textX = scaledX + scaledWidth - deleteButtonSize + 5;
-            textY = scaledY + scaledHeight - deleteButtonSize + 7;
-          } else {
-            // Default fallback for any other rotation
-            deleteButtonX = scaledX + scaledWidth - deleteButtonSize - 5;
-            deleteButtonY = scaledY + 5;
-            textX = scaledX + scaledWidth - deleteButtonSize + 5;
-            textY = scaledY + 17;
+          switch (getEffectiveRotation()) {
+            case 90:
+              // Top-left corner
+              deleteButtonX = scaledX + padding;
+              deleteButtonY = scaledY + padding;
+              textX = deleteButtonX + deleteButtonSize + padding;
+              textY = deleteButtonY + textPadding;
+              break;
+              
+            case 180:
+              // Bottom-left corner
+              deleteButtonX = scaledX + padding;
+              deleteButtonY = scaledY + scaledHeight - deleteButtonSize - padding;
+              textX = deleteButtonX + deleteButtonSize + padding;
+              textY = deleteButtonY + textPadding;
+              break;
+              
+            case 270:
+              // Bottom-right corner
+              deleteButtonX = scaledX + scaledWidth - deleteButtonSize - padding;
+              deleteButtonY = scaledY + scaledHeight - deleteButtonSize - padding;
+              textX = deleteButtonX - textPadding;
+              textY = deleteButtonY + textPadding;
+              break;
+              
+            case 0:
+            default:
+              // Top-right corner (default)
+              deleteButtonX = scaledX + scaledWidth - deleteButtonSize - padding;
+              deleteButtonY = scaledY + padding;
+              textX = deleteButtonX - textPadding;
+              textY = deleteButtonY + textPadding;
+              break;
           }
           
           ctx.beginPath();
@@ -476,41 +484,51 @@ export default function ImageAnnotator({
 
     // Draw the current selection rectangle if the user is drawing
     if (isDrawing && startPoint && currentPoint) {
-      // Get the drawing rectangle coordinates (ensuring we handle drawing in any direction)
+      // Get the drawing rectangle coordinates in image space
       const x = Math.min(startPoint.x, currentPoint.x);
       const y = Math.min(startPoint.y, currentPoint.y);
       const width = Math.abs(currentPoint.x - startPoint.x);
       const height = Math.abs(currentPoint.y - startPoint.y);
       
-      // Scale and rotate the selection rectangle
-      let scaledX, scaledY, scaledWidth, scaledHeight;
+      // Convert to canvas space
+      let scaledX = x * xScaleFactor;
+      let scaledY = y * yScaleFactor;
+      let scaledWidth = width * xScaleFactor;
+      let scaledHeight = height * yScaleFactor;
       
-      // For drawing, we need to apply the same transformations but in reverse
-      if (activeRotation === 0) {
-        // No rotation
-        scaledX = x * xScaleFactor;
-        scaledY = y * yScaleFactor;
-        scaledWidth = width * xScaleFactor;
-        scaledHeight = height * yScaleFactor;
-      } else if (activeRotation === 90) {
-        // 90 degrees
-        scaledX = canvas.width - (y + height) * yScaleFactor;
-        scaledY = x * xScaleFactor;
-        scaledWidth = height * yScaleFactor;
-        scaledHeight = width * xScaleFactor;
-      } else if (activeRotation === 180) {
-        // 180 degrees
-        scaledX = canvas.width - (x + width) * xScaleFactor;
-        scaledY = canvas.height - (y + height) * yScaleFactor;
-        scaledWidth = width * xScaleFactor;
-        scaledHeight = height * yScaleFactor;
-      } else if (activeRotation === 270) {
-        // 270 degrees
-        scaledX = y * yScaleFactor;
-        scaledY = canvas.height - (x + width) * xScaleFactor;
-        scaledWidth = height * yScaleFactor;
-        scaledHeight = width * xScaleFactor;
+      // Transform based on rotation
+      let finalX = scaledX;
+      let finalY = scaledY;
+      let finalWidth = scaledWidth;
+      let finalHeight = scaledHeight;
+      
+      switch (getEffectiveRotation()) {
+        case 90:
+          // 90 degrees clockwise
+          finalX = canvas.width - scaledY - scaledHeight;
+          finalY = scaledX;
+          finalWidth = scaledHeight;
+          finalHeight = scaledWidth;
+          break;
+          
+        case 180:
+          // 180 degrees
+          finalX = canvas.width - scaledX - scaledWidth;
+          finalY = canvas.height - scaledY - scaledHeight;
+          break;
+          
+        case 270:
+          // 270 degrees clockwise
+          finalX = scaledY;
+          finalY = canvas.height - scaledX - scaledWidth;
+          finalWidth = scaledHeight;
+          finalHeight = scaledWidth;
+          break;
       }
+      
+      // Store the transformed coordinates for reference
+      canvas.dataset.lastScaledX = String(finalX);
+      canvas.dataset.lastScaledY = String(finalY);
       
       // Set the style based on annotation type
       switch (currentAnnotationType) {
@@ -531,13 +549,16 @@ export default function ImageAnnotator({
           ctx.fillStyle = 'rgba(59, 130, 246, 0.15)';
       }
       
-      ctx.setLineDash([6, 3]); // Make a dashed line
+      // Draw the selection rectangle with dashed line
+      ctx.save();
+      ctx.setLineDash([6, 3]);
       ctx.lineWidth = 2;
       
-      // Draw the selection rectangle
-      ctx.fillRect(scaledX, scaledY, scaledWidth, scaledHeight);
-      ctx.strokeRect(scaledX, scaledY, scaledWidth, scaledHeight);
-      ctx.setLineDash([]); // Reset to solid line
+      // Draw the selection rectangle using transformed coordinates
+      ctx.fillRect(finalX, finalY, finalWidth, finalHeight);
+      ctx.strokeRect(finalX, finalY, finalWidth, finalHeight);
+      
+      ctx.restore(); // Restore previous canvas state
     }
   }, [
     image, 
@@ -559,48 +580,145 @@ export default function ImageAnnotator({
     onRotationChange
   ]);
 
+  // Handle zoom with mouse wheel
+  const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    
+    // Get mouse position relative to canvas
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    
+    // Calculate zoom factor based on wheel delta
+    const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+    const newZoom = Math.min(Math.max(zoomLevel * zoomFactor, 0.5), 5);
+    
+    // Calculate new pan offset to zoom toward mouse position
+    if (canvasRef.current) {
+      const canvasWidth = canvasRef.current.width;
+      const canvasHeight = canvasRef.current.height;
+      
+      // Calculate the point we're zooming to in canvas coordinates
+      const pointXBeforeZoom = (mouseX - panOffset.x) / zoomLevel;
+      const pointYBeforeZoom = (mouseY - panOffset.y) / zoomLevel;
+      
+      // Calculate where this point would be after applying the new zoom
+      const pointXAfterZoom = pointXBeforeZoom * newZoom;
+      const pointYAfterZoom = pointYBeforeZoom * newZoom;
+      
+      // Adjust the pan offset to keep the mouse position fixed
+      const newPanX = panOffset.x - (pointXAfterZoom - pointXBeforeZoom * zoomLevel);
+      const newPanY = panOffset.y - (pointYAfterZoom - pointYBeforeZoom * zoomLevel);
+      
+      setPanOffset({ x: newPanX, y: newPanY });
+    }
+    
+    setZoomLevel(newZoom);
+  };
+  
+  // Enhanced zoom in/out functions
   const handleZoomIn = () => {
-    setZoomLevel(prev => Math.min(prev + 0.25, 3));
+    setZoomLevel(prev => {
+      const newZoom = Math.min(prev * 1.2, 5);
+      return newZoom;
+    });
   };
   
   const handleZoomOut = () => {
-    setZoomLevel(prev => Math.max(prev - 0.25, 0.5));
+    setZoomLevel(prev => {
+      const newZoom = Math.max(prev / 1.2, 0.5);
+      return newZoom;
+    });
   };
   
   const handleResetZoom = () => {
     setZoomLevel(1);
+    setPanOffset({ x: 0, y: 0 });
   };
   
-  // Sync localRotation with prop when prop changes
-  useEffect(() => {
-    setLocalRotation(rotation);
-  }, [rotation]);
+  // Handle panning functionality
+  const handlePanStart = (e: React.MouseEvent<HTMLDivElement>) => {
+    // Only start panning if middle mouse button is pressed or space key is held
+    if (e.button === 1 || (e.button === 0 && e.altKey)) {
+      setIsPanning(true);
+      setPanStart({ x: e.clientX, y: e.clientY });
+      e.preventDefault();
+    }
+  };
+  
+  const handlePanMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (isPanning) {
+      const deltaX = e.clientX - panStart.x;
+      const deltaY = e.clientY - panStart.y;
+      
+      setPanOffset(prev => ({
+        x: prev.x + deltaX,
+        y: prev.y + deltaY
+      }));
+      
+      setPanStart({ x: e.clientX, y: e.clientY });
+      e.preventDefault();
+    }
+  };
+  
+  const handlePanEnd = () => {
+    setIsPanning(false);
+  };
+  
+  // Add a state to track Alt key press
+  const [isAltKeyPressed, setIsAltKeyPressed] = useState(false);
 
-  // Rotation controls
-  const handleRotateLeft = () => {
-    const newRotation = (rotation - 90 + 360) % 360; // Ensure it stays between 0-359
-    if (onRotationChange) {
-      onRotationChange(newRotation);
-    } else {
-      setLocalRotation(newRotation);
-    }
-  };
+  // Handle key press for panning with space bar and Alt key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !isPanning) {
+        document.body.style.cursor = 'grab';
+      }
+      if (e.code === 'AltLeft' || e.code === 'AltRight') {
+        setIsAltKeyPressed(true);
+      }
+    };
+    
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        document.body.style.cursor = 'default';
+      }
+      if (e.code === 'AltLeft' || e.code === 'AltRight') {
+        setIsAltKeyPressed(false);
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [isPanning]);
   
-  const handleRotateRight = () => {
-    const newRotation = (rotation + 90) % 360;
-    if (onRotationChange) {
-      onRotationChange(newRotation);
-    } else {
-      setLocalRotation(newRotation);
-    }
-  };
-  
-  const handleResetRotation = () => {
-    if (onRotationChange) {
-      onRotationChange(0);
-    } else {
-      setLocalRotation(0);
-    }
+  // Enhanced canvas coordinate conversion function
+  const convertBrowserToCanvasCoordinates = (browserX: number, browserY: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    
+    const rect = canvas.getBoundingClientRect();
+    
+    // Account for panning and zooming
+    const x = (browserX - rect.left - panOffset.x) / zoomLevel;
+    const y = (browserY - rect.top - panOffset.y) / zoomLevel;
+    
+    // Get the canvas scale factors from data attributes
+    const xScale = parseFloat(canvas.dataset.xScale || '1');
+    const yScale = parseFloat(canvas.dataset.yScale || '1');
+    
+    // Convert to image coordinates
+    const imageX = x / xScale;
+    const imageY = y / yScale;
+    
+    return { x: imageX, y: imageY };
   };
 
   const getMousePosition = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -613,60 +731,47 @@ export default function ImageAnnotator({
     const xScaleFactor = parseFloat(canvas.dataset.xScale || "1");
     const yScaleFactor = parseFloat(canvas.dataset.yScale || "1");
     
-    // These are the click coordinates in browser pixels
+    // Get mouse position in browser coordinates
     const browserX = e.clientX - rect.left;
     const browserY = e.clientY - rect.top;
     
-    // Step 1: Adjust for CSS zoom
-    // The canvas appears zoomed by CSS transform, but its internal coordinates are unchanged
-    // We need to convert browser pixel position to the pre-zoomed canvas position
-    const unzoomedX = browserX / zoomLevel;
-    const unzoomedY = browserY / zoomLevel;
+    // Account for panning and zooming
+    const adjustedX = (browserX - panOffset.x) / zoomLevel;
+    const adjustedY = (browserY - panOffset.y) / zoomLevel;
     
-    // Step 2: Convert to canvas pixel coordinates
-    // Since the canvas might be rendered at a different size than its internal pixel dimensions,
-    // we need to convert browser space to canvas space
-    const canvasScaleX = canvas.width / rect.width * zoomLevel;
-    const canvasScaleY = canvas.height / rect.height * zoomLevel;
+    // Convert to canvas coordinates
+    const canvasX = adjustedX * (canvas.width / rect.width);
+    const canvasY = adjustedY * (canvas.height / rect.height);
     
-    const canvasX = unzoomedX * canvasScaleX;
-    const canvasY = unzoomedY * canvasScaleY;
-
-    // Step 3: Transform coordinates based on rotation to get original image space coordinates
-    let transformedX = canvasX;
-    let transformedY = canvasY;
+    // Transform coordinates based on rotation
+    let imageX = canvasX;
+    let imageY = canvasY;
     
-    // Get the current rotation value (from either prop or local state)
-    const activeRotation = onRotationChange ? rotation : localRotation;
+    const effectiveRotation = getEffectiveRotation();
+    const canvasWidth = canvas.width;
+    const canvasHeight = canvas.height;
     
-    // Apply coordinate transformation based on rotation angle
-    if (activeRotation === 0) {
-      // No rotation
-      transformedX = canvasX;
-      transformedY = canvasY;
-    } else if (activeRotation === 90) {
-      // 90 degrees clockwise - need to adjust coordinates
-      const tempX = canvasY;
-      const tempY = canvas.width - canvasX;
-      transformedX = tempX;
-      transformedY = tempY;
-    } else if (activeRotation === 180) {
-      // 180 degrees - flip both coordinates
-      transformedX = canvas.width - canvasX;
-      transformedY = canvas.height - canvasY;
-    } else if (activeRotation === 270) {
-      // 270 degrees clockwise - transform coordinates
-      const tempX = canvas.height - canvasY;
-      const tempY = canvasX;
-      transformedX = tempX;
-      transformedY = tempY;
+    switch (effectiveRotation) {
+      case 90:
+        imageX = canvasY;
+        imageY = canvasWidth - canvasX;
+        break;
+        
+      case 180:
+        imageX = canvasWidth - canvasX;
+        imageY = canvasHeight - canvasY;
+        break;
+        
+      case 270:
+        imageX = canvasHeight - canvasY;
+        imageY = canvasX;
+        break;
     }
     
-    // Step 4: Convert from canvas coordinates to OCR coordinates
-    // The bounding boxes are in OCR coordinate space, not canvas space
+    // Convert to image coordinates
     return {
-      x: transformedX / xScaleFactor,
-      y: transformedY / yScaleFactor
+      x: imageX / xScaleFactor,
+      y: imageY / yScaleFactor
     };
   };
 
@@ -760,28 +865,35 @@ export default function ImageAnnotator({
         // Check if click is on delete button
         const deleteButtonSize = 16;
         
-        // Get the current rotation value (from either prop or local state)
-        const activeRotation = onRotationChange ? rotation : localRotation;
-        
         // Position delete button based on rotation
         let deleteButtonX, deleteButtonY;
+        const padding = 5;
         
-        if (activeRotation === 0) {
-          deleteButtonX = scaledX + scaledWidth - deleteButtonSize - 5;
-          deleteButtonY = scaledY + 5;
-        } else if (activeRotation === 90) {
-          deleteButtonX = scaledX + 5;
-          deleteButtonY = scaledY + 5;
-        } else if (activeRotation === 180) {
-          deleteButtonX = scaledX + 5;
-          deleteButtonY = scaledY + scaledHeight - deleteButtonSize - 5;
-        } else if (activeRotation === 270) {
-          deleteButtonX = scaledX + scaledWidth - deleteButtonSize - 5;
-          deleteButtonY = scaledY + scaledHeight - deleteButtonSize - 5;
-        } else {
-          // Default fallback for any other rotation
-          deleteButtonX = scaledX + scaledWidth - deleteButtonSize - 5;
-          deleteButtonY = scaledY + 5;
+        switch (getEffectiveRotation()) {
+          case 90:
+            // Top-left corner
+            deleteButtonX = scaledX + padding;
+            deleteButtonY = scaledY + padding;
+            break;
+            
+          case 180:
+            // Bottom-left corner
+            deleteButtonX = scaledX + padding;
+            deleteButtonY = scaledY + scaledHeight - deleteButtonSize - padding;
+            break;
+            
+          case 270:
+            // Bottom-right corner
+            deleteButtonX = scaledX + scaledWidth - deleteButtonSize - padding;
+            deleteButtonY = scaledY + scaledHeight - deleteButtonSize - padding;
+            break;
+            
+          case 0:
+          default:
+            // Top-right corner (default)
+            deleteButtonX = scaledX + scaledWidth - deleteButtonSize - padding;
+            deleteButtonY = scaledY + padding;
+            break;
         }
         
         if (
@@ -1049,6 +1161,29 @@ export default function ImageAnnotator({
     }
   };
 
+  // Handle rotation changes
+  const handleRotationChange = (newRotation: number) => {
+    setLocalRotation(newRotation);
+    if (onRotationChange) {
+      onRotationChange(newRotation);
+    }
+  };
+  
+  // Rotation handler functions
+  const handleRotateLeft = () => {
+    const newRotation = (localRotation - 90 + 360) % 360;
+    handleRotationChange(newRotation);
+  };
+  
+  const handleRotateRight = () => {
+    const newRotation = (localRotation + 90) % 360;
+    handleRotationChange(newRotation);
+  };
+  
+  const handleResetRotation = () => {
+    handleRotationChange(0);
+  };
+
   if (error) {
     return (
       <div className="flex items-center justify-center h-full text-red-500">
@@ -1124,7 +1259,7 @@ export default function ImageAnnotator({
                 </svg>
               </button>
               
-              <span className="text-sm font-medium mx-1">{rotation}°</span>
+              <span className="text-sm font-medium mx-1">{localRotation}°</span>
               
               <button 
                 onClick={handleRotateRight}
@@ -1140,7 +1275,7 @@ export default function ImageAnnotator({
                 onClick={handleResetRotation}
                 className="p-1 rounded hover:bg-gray-100 text-gray-700 ml-1"
                 title="Reset Rotation"
-                disabled={rotation === 0}
+                disabled={localRotation === 0}
               >
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -1175,13 +1310,9 @@ export default function ImageAnnotator({
               Selected: "{selectedBox.text.substring(0, 30)}{selectedBox.text.length > 30 ? '...' : ''}"
             </div>
           )}
-          
-          <div className="text-sm text-gray-600">
-            {textLines.length} text elements detected
-          </div>
         </div>
       ) : (
-        <AnnotationControls
+        <AnnotationControls 
           annotationMode={annotationMode}
           onToggleAnnotationMode={onAnnotationModeToggle || (() => {})}
           currentAnnotationType={currentAnnotationType}
@@ -1189,52 +1320,79 @@ export default function ImageAnnotator({
           onDetectTables={onDetectTables}
           onProcessAnnotations={onProcessAnnotations}
           annotationsCount={annotations?.length || 0}
-          rotation={rotation}
+          rotation={localRotation}
           onRotateLeft={handleRotateLeft}
           onRotateRight={handleRotateRight}
           onResetRotation={handleResetRotation}
+          zoomLevel={zoomLevel}
+          onZoomIn={handleZoomIn}
+          onZoomOut={handleZoomOut}
+          onResetZoom={handleResetZoom}
         />
       )}
       
       {/* Canvas Container with Overflow */}
       <div 
         ref={containerRef}
-        className="flex-1 overflow-auto relative flex items-center justify-center bg-white"
+        className="flex-1 overflow-hidden relative flex items-center justify-center bg-white"
         style={{
           backgroundImage: 'linear-gradient(45deg, #f0f0f0 25%, transparent 25%, transparent 75%, #f0f0f0 75%), linear-gradient(45deg, #f0f0f0 25%, transparent 25%, transparent 75%, #f0f0f0 75%)',
           backgroundSize: '20px 20px',
           backgroundPosition: '0 0, 10px 10px',
-          borderRadius: '4px'
+          borderRadius: '4px',
+          cursor: isPanning ? 'grabbing' : (isAltKeyPressed ? 'grab' : undefined),
+          minHeight: '400px',
+          position: 'relative'
         }}
+        onWheel={handleWheel}
+        onMouseDown={handlePanStart}
+        onMouseMove={handlePanMove}
+        onMouseUp={handlePanEnd}
+        onMouseLeave={handlePanEnd}
       >
-        <canvas
-          ref={canvasRef}
-          onClick={handleCanvasClick}
-          onMouseDown={handleCanvasMouseDown}
-          onMouseMove={handleCanvasMouseMove}
-          onMouseUp={handleCanvasMouseUp}
-          onMouseLeave={handleCanvasMouseLeave}
+        {isLoading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-75">
+            <div className="text-gray-600">Loading image...</div>
+          </div>
+        )}
+        
+        {error && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="text-red-500">{error}</div>
+          </div>
+        )}
+        <div
+          className="transform-container"
           style={{
-            transform: `scale(${zoomLevel})`,
+            transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomLevel})`,
+            transition: isPanning ? 'none' : 'transform 0.1s ease',
             transformOrigin: 'center center',
-            transition: 'transform 0.2s ease',
-            cursor: annotationMode 
-              ? isDrawing 
-                ? 'crosshair' 
-                : 'crosshair' 
-              : textLines.length > 0 
-                ? 'pointer' 
-                : 'default',
-            // Enhanced image quality improvements
-            imageRendering: 'high-quality', // Modern browsers
-            WebkitImageRendering: 'crisp-edges', // Safari
-            msInterpolationMode: 'bicubic', // For IE
-            WebkitFontSmoothing: 'antialiased',
-            MozOsxFontSmoothing: 'grayscale',
-            boxShadow: '0 4px 10px -1px rgba(0, 0, 0, 0.15)',
-            backfaceVisibility: 'hidden', // Prevent flickering during transforms
           }}
-        />
+        >
+          <canvas
+            ref={canvasRef}
+            onClick={handleCanvasClick}
+            onMouseDown={handleCanvasMouseDown}
+            onMouseMove={handleCanvasMouseMove}
+            onMouseUp={handleCanvasMouseUp}
+            onMouseLeave={handleCanvasMouseLeave}
+            style={{
+              display: 'block',
+              maxWidth: '100%',
+              maxHeight: '100%',
+              cursor: annotationMode ? 'crosshair' : (textLines.length > 0 ? 'pointer' : 'default'),
+              imageRendering: 'high-quality',
+              WebkitImageRendering: 'crisp-edges',
+              msInterpolationMode: 'bicubic',
+              boxShadow: '0 4px 10px -1px rgba(0, 0, 0, 0.15)',
+            }}
+          />
+        </div>
+        
+        {/* Zoom indicator */}
+        <div className="absolute bottom-4 right-4 bg-black bg-opacity-50 text-white px-3 py-1 rounded-full text-sm">
+          {Math.round(zoomLevel * 100)}%
+        </div>
       </div>
     </div>
   );

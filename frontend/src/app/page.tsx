@@ -846,7 +846,7 @@ export default function Home() {
 
     return (
         <main className="min-h-screen bg-gray-50">
-            <div className="max-w-7xl mx-auto px-4 py-6">
+            <div className="max-w-full mx-auto px-4 py-6">
                 <h1 className="text-3xl font-bold text-gray-900 mb-6 text-center">
                     Feature Extraction
                 </h1>
@@ -908,7 +908,7 @@ export default function Home() {
                         {/* Main Content - Side-by-Side Layout - Full height */}
                         <div className="flex flex-row gap-4 h-[calc(90vh-150px)] min-h-[650px]">
                             {/* Image View - Left Side */}
-                            <div className="w-2/3 bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
+                            <div className="w-1/2 bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
                                 {processingState.currentPage > 0 ? (
                                     <ImageAnnotator
                                         pageImage={processingState.pageImages[processingState.currentPage]}
@@ -951,7 +951,7 @@ export default function Home() {
                             </div>
 
                             {/* Extracted Content - Right Side */}
-                            <div className="w-1/3 bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
+                            <div className="w-1/2 bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
                                 <ContentTabs
                                     annotations={processingState.annotations[processingState.currentPage] || []}
                                 />

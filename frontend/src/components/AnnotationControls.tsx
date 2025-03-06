@@ -15,6 +15,10 @@ interface AnnotationControlsProps {
   onRotateLeft?: () => void;
   onRotateRight?: () => void;
   onResetRotation?: () => void;
+  zoomLevel?: number;
+  onZoomIn?: () => void;
+  onZoomOut?: () => void;
+  onResetZoom?: () => void;
 }
 
 export default function AnnotationControls({
@@ -28,7 +32,11 @@ export default function AnnotationControls({
   rotation = 0,
   onRotateLeft,
   onRotateRight,
-  onResetRotation
+  onResetRotation,
+  zoomLevel = 1,
+  onZoomIn,
+  onZoomOut,
+  onResetZoom
 }: AnnotationControlsProps) {
   return (
     <div className="bg-white p-2 border-b flex items-center justify-between">
@@ -86,6 +94,48 @@ export default function AnnotationControls({
             )}
           </div>
         </div>
+        
+        {/* Zoom Controls */}
+        {onZoomIn && onZoomOut && (
+          <div className="flex items-center space-x-1 border-l pl-3 ml-1">
+            <span className="text-xs text-gray-500">Zoom:</span>
+            <div className="flex gap-1 items-center">
+              <button 
+                onClick={onZoomOut}
+                className="p-1 rounded hover:bg-gray-100 text-gray-700"
+                title="Zoom Out"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 12H4" />
+                </svg>
+              </button>
+              
+              <span className="text-xs font-medium">{Math.round(zoomLevel * 100)}%</span>
+              
+              <button 
+                onClick={onZoomIn}
+                className="p-1 rounded hover:bg-gray-100 text-gray-700"
+                title="Zoom In"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+              </button>
+              
+              {zoomLevel !== 1 && onResetZoom && (
+                <button 
+                  onClick={onResetZoom}
+                  className="p-1 rounded hover:bg-gray-100 text-gray-700"
+                  title="Reset Zoom"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Annotation Type Selection */}
         {annotationMode && (
@@ -133,7 +183,7 @@ export default function AnnotationControls({
         {annotationMode && onDetectTables && (
           <button
             onClick={onDetectTables}
-            className="px-2 py-1 ml-1 rounded text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 transition"
+            className="px-3 py-1.5 ml-2 rounded text-sm font-medium bg-amber-50 text-amber-700 border border-amber-300 hover:bg-amber-100 transition-colors"
             title="Automatically detect tables"
           >
             Auto-detect Tables
@@ -141,19 +191,19 @@ export default function AnnotationControls({
         )}
       </div>
 
-      {annotationsCount > 0 && (
-        <div className="flex items-center gap-3">
-          <span className="text-sm text-gray-600">
-            {annotationsCount} area{annotationsCount !== 1 ? 's' : ''} selected
-          </span>
-          {onProcessAnnotations && (
-            <button
-              onClick={onProcessAnnotations}
-              className="px-3 py-1.5 rounded text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 transition"
-            >
-              Process Annotations
-            </button>
+      {onProcessAnnotations && annotationsCount > 0 && (
+        <div className="flex items-center gap-3 mr-4">
+          {currentAnnotationType !== AnnotationType.TABLE && (
+            <span className="text-sm text-gray-600">
+              {annotationsCount} area{annotationsCount !== 1 ? 's' : ''} selected
+            </span>
           )}
+          <button
+            onClick={onProcessAnnotations}
+            className="px-4 py-1.5 rounded text-sm font-medium bg-violet-600 text-white hover:bg-violet-700 transition-colors shadow-sm"
+          >
+            Process Annotations
+          </button>
         </div>
       )}
     </div>

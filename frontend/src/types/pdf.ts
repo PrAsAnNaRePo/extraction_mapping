@@ -34,12 +34,26 @@ export enum AnnotationType {
     DIAGRAM = 'diagram'
 }
 
+interface TableResult {
+  html: string;
+  title?: string;
+  description?: string;
+}
+
+interface TextResult {
+  title: string;
+  description: string;
+  extracted_content: string;
+}
+
 export interface Annotation {
     id: string;
     type: AnnotationType;
     bbox: [number, number, number, number];
-    processed: boolean;
-    result?: any; // Extracted content after processing
+    processed?: boolean;
+    result?: TableResult | TableResult[] | TextResult | string | string[];
+    imageData?: string;
+    rotation?: number;
     hasError?: boolean; // Indicates if there was an error during processing
     isSelected?: boolean; // Whether this annotation is currently selected
     isAdjusting?: boolean; // Whether this annotation is being adjusted/resized
