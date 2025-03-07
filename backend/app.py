@@ -21,6 +21,7 @@ from table_agent import TableDetector
 from table_extract import TOCRAgent
 import diagram_extract
 from text_extract import TextAgent, system_instruction as text_system_instruction
+from format_sheet import extract_fields, FieldRequest
 
 class TextEdit(BaseModel):
     page: int
@@ -48,6 +49,11 @@ class TableEdit(BaseModel):
     row: int
     col: int
     annotationId: str
+
+class FieldExtractionResponse(BaseModel):
+    """Model for field extraction response."""
+    fields: Dict[str, str]
+    metadata: Dict[str, Any]
 
 app = FastAPI()
 
@@ -80,6 +86,25 @@ async def add_allow_iframe(request, call_next):
     response = await call_next(request)
     response.headers["X-Frame-Options"] = "ALLOWALL"
     return response
+
+@app.post("/extract-fields")
+async def extract_fields_endpoint(request: FieldRequest) -> Dict[str, str]:
+    """Extract specified fields from content using GPT-4.
+    
+    Args:
+        request: Field extraction request containing content and field definitions
+        
+    Returns:
+        Dictionary mapping field names to their extracted values
+    """
+    try:
+        extracted_fields = extract_fields(request.content, request.fields)
+        return extracted_fields
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error extracting fields: {str(e)}"
+        )
 
 # Initialize predictors once
 recognition_predictor = RecognitionPredictor()

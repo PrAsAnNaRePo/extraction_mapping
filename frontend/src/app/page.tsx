@@ -50,7 +50,61 @@ export default function Home() {
         currentAnnotationType: AnnotationType.TEXT,
         isDrawing: false,
         pageRotations: {} as Record<number, number>,
+        isExtractingFields: false,
+        extractedFields: undefined,
     });
+
+    const handleFieldExtraction = async (fields: { [key: string]: string }) => {
+        try {
+            setProcessingState(prev => ({ ...prev, isExtractingFields: true }));
+
+            // Collect all text content from annotations
+            const allContent = Object.values(processingState.annotations)
+                .flat()
+                .filter(annotation => annotation.processed && annotation.result)
+                .map(annotation => {
+                    if (typeof annotation.result === 'string') {
+                        return annotation.result;
+                    } else if (Array.isArray(annotation.result)) {
+                        return annotation.result.join('\n');
+                    } else if ('extracted_content' in annotation.result) {
+                        return annotation.result.extracted_content;
+                    } else if ('html' in annotation.result) {
+                        return annotation.result.html;
+                    }
+                    return '';
+                })
+                .join('\n\n');
+
+            const response = await axios.post<Record<string, string>>(
+                `${API_BASE_URL}/extract-fields`,
+                {
+                    content: allContent,
+                    fields: fields
+                }
+            );
+
+            const extractedFields = response.data;
+            
+            // Validate the response
+            if (!extractedFields || typeof extractedFields !== 'object') {
+                throw new Error('Invalid response format from field extraction');
+            }
+
+            setProcessingState(prev => ({
+                ...prev,
+                isExtractingFields: false,
+                extractedFields
+            }));
+
+            const fieldCount = Object.keys(extractedFields).length;
+            toast.success(`Successfully extracted ${fieldCount} field${fieldCount === 1 ? '' : 's'}`);
+        } catch (error: any) {
+            console.error('Error extracting fields:', error);
+            setProcessingState(prev => ({ ...prev, isExtractingFields: false }));
+            toast.error(error.response?.data?.detail || 'Failed to extract fields');
+        }
+    };
 
     const handlePDFSelect = async (file: File) => {
         try {
@@ -953,7 +1007,27 @@ export default function Home() {
                             {/* Extracted Content - Right Side */}
                             <div className="w-1/2 bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
                                 <ContentTabs
-                                    annotations={processingState.annotations[processingState.currentPage] || []}
+                                    annotations={Object.values(processingState.annotations).flat()}
+                                    textContent={<TextSidebar 
+                                      annotations={processingState.annotations[processingState.currentPage] || []}
+                                      onTextClick={handleBoxClick}
+                                      selectedBox={processingState.selectedBox} 
+                                      onTextEdit={handleTextEdit}
+                                    />}
+                                    currentTab={processingState.currentAnnotationType}
+                                    onTabChange={handleAnnotationTypeChange}
+                                    onAnnotationsUpdate={(annotations) => {
+                                        setProcessingState(prev => ({
+                                            ...prev,
+                                            annotations: {
+                                                ...prev.annotations,
+                                                [prev.currentPage]: annotations
+                                            }
+                                        }));
+                                    }}
+                                    onExtractFields={handleFieldExtraction}
+                                    isExtractingFields={processingState.isExtractingFields}
+                                    extractedFields={processingState.extractedFields}
                                 />
                             </div>
                         </div>

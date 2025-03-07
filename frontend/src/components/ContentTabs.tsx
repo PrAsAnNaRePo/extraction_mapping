@@ -4,6 +4,8 @@ import { useState } from 'react';
 import { Annotation, AnnotationType } from '@/types/pdf';
 import { utils, writeFile } from 'xlsx';
 import { EditableTable } from './EditableTable';
+import FieldExtractionPanel from './FieldExtractionPanel';
+import ExtractedFieldsDisplay from './ExtractedFieldsDisplay';
 
 interface ContentTabsProps {
   annotations: Annotation[];
@@ -11,6 +13,9 @@ interface ContentTabsProps {
   currentTab?: AnnotationType;
   onTabChange?: (tab: AnnotationType) => void;
   onAnnotationsUpdate?: (annotations: Annotation[]) => void;
+  onExtractFields?: (fields: { [key: string]: string }) => Promise<void>;
+  isExtractingFields?: boolean;
+  extractedFields?: { [key: string]: string };
 }
 
 const convertHtmlTableToArray = (htmlString: string): string[][] => {
@@ -29,7 +34,10 @@ export default function ContentTabs({
   textContent,
   currentTab = AnnotationType.TEXT,
   onTabChange,
-  onAnnotationsUpdate
+  onAnnotationsUpdate,
+  onExtractFields,
+  isExtractingFields,
+  extractedFields
 }: ContentTabsProps) {
   const [activeTab, setActiveTab] = useState<AnnotationType>(currentTab);
   const [exportLoading, setExportLoading] = useState<string | null>(null);
@@ -206,6 +214,24 @@ export default function ContentTabs({
           >
             Diagrams {diagramCount > 0 && <span className="ml-1 text-xs bg-purple-100 text-purple-800 px-1.5 py-0.5 rounded-full">{diagramCount}</span>}
           </button>
+
+          {/* Fields tab - show if we have content to extract from or fields already extracted */}
+          {((textCount > 0 || tableCount > 0 || diagramCount > 0) || (extractedFields && Object.keys(extractedFields).length > 0)) && (
+            <button
+              onClick={() => handleTabChange(AnnotationType.FIELDS)}
+              className={`px-4 py-2 text-sm font-medium border-b-2 ${
+                activeTab === AnnotationType.FIELDS
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              } transition-colors`}
+            >
+              Fields {extractedFields && Object.keys(extractedFields).length > 0 && (
+                <span className="ml-1 text-xs bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded-full">
+                  {Object.keys(extractedFields).length}
+                </span>
+              )}
+            </button>
+          )}
         </div>
       </div>
       
@@ -418,6 +444,35 @@ export default function ContentTabs({
                   )}
                 </div>
               ))
+            )}
+          </div>
+        )}
+        
+        {activeTab === AnnotationType.FIELDS && (
+          <div className="space-y-6 max-w-4xl mx-auto">
+            {onExtractFields && annotations.length > 0 ? (
+              <>
+                <FieldExtractionPanel
+                  onExtractFields={onExtractFields}
+                  isLoading={isExtractingFields}
+                />
+                {extractedFields && Object.keys(extractedFields).length > 0 && (
+                  <ExtractedFieldsDisplay
+                    fields={extractedFields}
+                    className="mt-8"
+                  />
+                )}
+              </>
+            ) : (
+              <div className="p-6 text-center bg-gray-50 rounded-lg">
+                <svg className="w-12 h-12 mx-auto text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <h3 className="mt-4 text-lg font-medium text-gray-900">No Content Available</h3>
+                <p className="mt-2 text-sm text-gray-600">
+                  Please process some content before attempting to extract fields.
+                </p>
+              </div>
             )}
           </div>
         )}

@@ -31,7 +31,8 @@ export interface PDFProcessingResult {
 export enum AnnotationType {
     TEXT = 'text',
     TABLE = 'table',
-    DIAGRAM = 'diagram'
+    DIAGRAM = 'diagram',
+    FIELDS = 'fields'
 }
 
 interface TableResult {
@@ -59,6 +60,16 @@ export interface Annotation {
     isAdjusting?: boolean; // Whether this annotation is being adjusted/resized
 }
 
+export interface FieldExtractionResult {
+    [key: string]: string;
+}
+
+export interface Field {
+    name: string;
+    description: string;
+    type: 'text' | 'number' | 'date' | 'list';
+}
+
 export interface PDFProcessingState {
     isProcessing: boolean;
     currentPage: number;
@@ -73,4 +84,6 @@ export interface PDFProcessingState {
     isDrawing: boolean;
     selectedAnnotationId?: string; // ID of selected annotation for editing
     pageRotations?: Record<number, number>; // Store rotation for each page (0, 90, 180, 270 degrees)
+    extractedFields?: FieldExtractionResult; // Results from field extraction
+    isExtractingFields?: boolean; // Whether field extraction is in progress
 }

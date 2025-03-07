@@ -193,11 +193,11 @@ export default function AnnotationControls({
 
       {onProcessAnnotations && annotationsCount > 0 && (
         <div className="flex items-center gap-3 mr-4">
-          {currentAnnotationType !== AnnotationType.TABLE && (
+          {/* {currentAnnotationType !== AnnotationType.TABLE && (
             <span className="text-sm text-gray-600">
               {annotationsCount} area{annotationsCount !== 1 ? 's' : ''} selected
             </span>
-          )}
+          )} */}
           <button
             onClick={onProcessAnnotations}
             className="px-4 py-1.5 rounded text-sm font-medium bg-violet-600 text-white hover:bg-violet-700 transition-colors shadow-sm"
